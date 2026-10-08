@@ -1,0 +1,26 @@
+# data and generated outputs (never committed)
+Data/
+outputs/
+candidates/
+*.7z
+*.pdf
+
+# research database (Optuna SQLite)
+research/*.db
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# python / tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# local agent workspace files (not project content)
+.agents/
+.kiro/

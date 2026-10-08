@@ -1,0 +1,13 @@
+Copyright (c) 2026 gp6fu6-csc. All rights reserved.
+
+This software and its source code, documentation and associated files (the "Software") are
+proprietary and confidential. No part of the Software may be copied, modified, distributed,
+sublicensed, published or used, in whole or in part, without the prior written permission of
+the copyright holder.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. IN NO EVENT
+SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM THE
+USE OF THE SOFTWARE.
+
+Third-party packages used by the Software remain under their own licences (permissive only:
+MIT, BSD, Apache-2.0, PSF, ISC, LGPL via dynamic linking); see `scripts/check_licenses.py`.
