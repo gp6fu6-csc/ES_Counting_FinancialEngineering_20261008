@@ -6,6 +6,8 @@
   escount train --project <id> | --general [--device cuda|cpu] -> model/ + manifest.json
   escount select-rois --project <id> | --general -> minimal ROIs (project.json, manifest)
   escount benchmark --project <id>        -> single-thread CPU latency of the selected ROIs
+  escount infer --project <id> --input <file|folder> [--model project|general] [--no-plots] ...
+                                          -> per-image outputs + predictions.csv
 The migrated V3 pipelines stay reachable unchanged:
   escount legacy-count  <args>   -> escount.es_counting (calibrate / analyze / run-all / predict)
   escount legacy-rotate <args>   -> escount.calibration.rotation_correction
@@ -141,6 +143,40 @@ def cmd_benchmark(args):
     return 0 if report["within_limit"] else 3
 
 
+def cmd_infer(args):
+    import cv2
+    from threadpoolctl import threadpool_limits
+
+    from escount.inference.engine import InferenceEngine, OutputOptions
+
+    try:
+        options = OutputOptions(corrected=not args.no_corrected, analysis_plot=not args.no_plots,
+                                signals_csv=not args.no_signals, result_json=not args.no_json, dpi=args.dpi)
+    except ValueError as error:
+        raise SystemExit(f"escount infer: {error}") from error
+    case = Path(args.project).name if Path(args.project).is_dir() else args.project
+    output = Path(args.output) if args.output else Path("outputs") / "infer" / case
+    previous = cv2.getNumThreads()
+    cv2.setNumThreads(1)                      # single-process, single-thread CPU (as in `escount benchmark`)
+    try:
+        with threadpool_limits(limits=1):
+            engine = InferenceEngine.load(case, args.model, args.profiles_root, args.config)
+            results = engine.run(args.input, output, options)
+    except (FileNotFoundError, ValueError) as error:
+        raise SystemExit(f"escount infer: {error}") from error
+    finally:
+        cv2.setNumThreads(previous)
+    for result in results:
+        stages = " ".join(f"{k}={v:.1f}" for k, v in result["timings_ms"].items() if k != "total")
+        print(f"{result['image']}: N_pred={result['N_pred']} GT={result['gt']} hit={result['hit']} "
+              f"total={result['timings_ms']['total']:.1f} ms ({stages}) outputs={result['outputs']}")
+    labelled = [r for r in results if r["gt"] is not None]
+    print(f"{case} ({args.model} model {engine.model_case}, {len(engine.runtime.manifest['selected_rois'])} ROIs): "
+          f"{len(results)} images, exact hits {sum(bool(r['hit']) for r in labelled)}/{len(labelled)}; "
+          f"wrote {(output / 'predictions.csv').resolve()}")
+    return 0
+
+
 def _common(command, cache=True):
     command.add_argument("--data-root", default="Data", help="root folder of case ids (default: Data)")
     command.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")
@@ -205,6 +241,21 @@ def build_parser():
     bench.add_argument("--project", required=True, help="case id or project folder path")
     _common(bench, cache=False)
     bench.set_defaults(func=cmd_benchmark)
+
+    infer = sub.add_parser("infer", help="InferenceEngine on an image file or folder (single-process CPU)")
+    infer.add_argument("--project", required=True, help="case id (profile under --profiles-root) or profile folder")
+    infer.add_argument("--input", required=True, help="image file or folder of PNG images")
+    infer.add_argument("--output", help="output folder (default: outputs/infer/<case>)")
+    infer.add_argument("--model", choices=("project", "general"), default="project",
+                       help="project model or the production General model (default: project)")
+    infer.add_argument("--no-plots", action="store_true", help="skip analysis.png")
+    infer.add_argument("--no-corrected", action="store_true", help="skip corrected.png")
+    infer.add_argument("--no-signals", action="store_true", help="skip signals.csv")
+    infer.add_argument("--no-json", action="store_true", help="skip result.json")
+    infer.add_argument("--dpi", type=int, default=100, help="analysis.png dpi, >= 64 (default: 100)")
+    infer.add_argument("--config", default="configs/general.json", help="General config (production General model)")
+    infer.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")
+    infer.set_defaults(func=cmd_infer)
     return parser
 
 

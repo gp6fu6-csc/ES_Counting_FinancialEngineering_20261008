@@ -58,10 +58,21 @@ class ProjectRuntime:
             items.append((next(slot for slot in bank if slot.x == roi["x"]), roi["projection"]))
         return cls(profile, items, extent_slots(mask, grid.side_margin), grid, model, manifest)
 
+    def kept_items(self, extent):
+        """Selected (slot, projection) items clipped to this image's stack extent."""
+        from escount.features.extract import clip_items
+
+        return clip_items(self.items, extent)
+
     def predict(self, gray):
         """Return (rounded prediction or None, per-ROI predictions, stage timings in ms)."""
+        result = self.run(gray)
+        return result["prediction"], result["per_roi"], result["timings"]
+
+    def run(self, gray):
+        """Timed pipeline keeping the intermediates (rotated image, kept items, feature rows)."""
         from escount.calibration.rotation_correction import rotate_image
-        from escount.features.extract import clip_items, roi_features
+        from escount.features.extract import roi_features
         from escount.models.train import aggregate, feature_frame
         from escount.signals.roi_bank import stack_rows
 
@@ -76,7 +87,7 @@ class ProjectRuntime:
         rotated = rotate_image(gray, self.profile.angle_deg)
         lap("rotate")
         extent, _ = stack_rows(rotated, self.ext_slots)
-        kept = clip_items(self.items, extent)
+        kept = self.kept_items(extent)
         lap("extent")
         rows = roi_features(rotated, kept, self.valid_x0, self.valid_width, self.grid.gaussian_sigma_ratio)
         lap("features")
@@ -90,7 +101,8 @@ class ProjectRuntime:
         lap("model")
         prediction = int(np.rint(aggregate(per_roi, self.manifest["aggregation"]))) if per_roi.size else None
         lap("aggregate")
-        return prediction, per_roi, timings
+        return {"prediction": prediction, "per_roi": per_roi, "timings": timings, "rotated": rotated,
+                "extent": extent, "kept": kept, "rows": rows}
 
 
 def benchmark(case, data_root="Data", profiles_root="outputs/projects", write=True):
