@@ -10,8 +10,13 @@ chosen on the training fold by exact hits (ties: fewer ROIs, then lower cost). T
 adopted only if its Grouped-LOO (LOIO) exact hit rate is strictly higher than the baseline's.
 
 General: scale-normalised features (counts / period_count, w / period, no absolute px), trained on
-all projects; evaluated LOIO and LOPO for both `general` (all projects incl. Ring-type) and
-`general_no_ring`. configs/general.json `exclude_from_general` selects the production General model.
+all active projects; evaluated LOIO and LOPO. configs/general.json:
+  excluded_projects     projects left out of prepare --all / train / research / report entirely
+                        (the user excluded Ring-type: unreliable, LOIO 3/6); Data/ is never touched.
+  exclude_from_general  projects left out of the General model only.
+While Ring-type is active, `general` (incl. Ring-type) and `general_no_ring` are both trained for the
+Ring inclusion comparison and `exclude_from_general` selects the production General model; with
+Ring-type excluded only `general` exists.
 """
 import json
 import warnings
@@ -280,8 +285,28 @@ def train_project(case, cache_root="outputs/features", profiles_root="outputs/pr
 def load_general_config(path="configs/general.json"):
     path = Path(path)
     config = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    config.setdefault("excluded_projects", [])
     config.setdefault("exclude_from_general", [])
     return config
+
+
+def active_projects(cases, config):
+    """`cases` without the configured excluded_projects (order kept)."""
+    excluded = set(config["excluded_projects"])
+    return [case for case in cases if case not in excluded]
+
+
+def check_active(case, config):
+    """Raise ValueError if `case` is an excluded project."""
+    if case in config["excluded_projects"]:
+        raise ValueError(f"{case} is listed in excluded_projects of the General config; remove it there to "
+                         f"re-enable it")
+
+
+def general_cases(config, projects=None):
+    """General case ids in use: 'general', plus 'general_no_ring' while Ring-type is active."""
+    ring = RING_CASE not in config["excluded_projects"] and (projects is None or RING_CASE in projects)
+    return list(GENERAL_CASES) if ring else ["general"]
 
 
 def general_table(tables, exclude=()):
@@ -292,14 +317,19 @@ def general_table(tables, exclude=()):
     return pd.concat(kept, ignore_index=True)
 
 
-def general_variants(cases, exclude=()):
-    """{'general': cases kept incl. Ring-type, 'general_no_ring': cases without Ring-type}."""
-    others = set(exclude) - {RING_CASE}
-    return {"general": sorted(set(cases) - others), "general_no_ring": sorted(set(cases) - others - {RING_CASE})}
+def general_variants(cases, exclude=(), excluded=()):
+    """{'general': cases minus `excluded` projects and non-Ring `exclude` entries} plus, while Ring-type is
+    still among them, {'general_no_ring': the same without Ring-type} for the Ring inclusion comparison."""
+    kept = sorted(set(cases) - set(excluded) - (set(exclude) - {RING_CASE}))
+    variants = {"general": kept}
+    if RING_CASE in kept:
+        variants["general_no_ring"] = [case for case in kept if case != RING_CASE]
+    return variants
 
 
 def production_general(config):
-    return "general_no_ring" if RING_CASE in config["exclude_from_general"] else "general"
+    ring_active = RING_CASE not in config["excluded_projects"]
+    return "general_no_ring" if ring_active and RING_CASE in config["exclude_from_general"] else "general"
 
 
 def ring_comparison(manifests):
@@ -328,6 +358,7 @@ def train_general(cache_root="outputs/features", profiles_root="outputs/projects
 
     config = load_general_config(config_path)
     cases = cases or sorted(p.name for p in Path(cache_root).iterdir() if (p / "features.parquet").is_file())
+    cases = active_projects(cases, config)
     tables = {case: load_features(case, cache_root) for case in cases}
     manifests = {}
     for name, kept in general_variants(cases, config["exclude_from_general"]).items():
@@ -336,10 +367,16 @@ def train_general(cache_root="outputs/features", profiles_root="outputs/projects
                                      scale_normalised=True, schemes=("LOIO", "LOPO"),
                                      max_rows_per_image=max_rows_per_image,
                                      feature_config=load_manifest(kept[0], cache_root)["feature_config"], log=log)
-    comparison = ring_comparison(manifests)
+    if "general_no_ring" in manifests:
+        comparison = ring_comparison(manifests)
+        log(f"[general] ring_hurts_others={comparison['ring_hurts_others']} "
+            f"recommended exclude_from_general={comparison['recommended_exclude_from_general']}")
+    else:
+        comparison = {"ring_excluded": True, "excluded_projects": config["excluded_projects"],
+                      "excluded_reason": config.get("excluded_reason", {}),
+                      "note": "Ring-type is not part of the General data; no with/without Ring comparison"}
+        log(f"[general] trained without {config['excluded_projects']} (excluded_projects); no Ring comparison")
     comparison.update(config_exclude_from_general=config["exclude_from_general"],
-                      production_general=production_general(config))
+                      production_general=production_general(config), general_cases=list(manifests))
     write_json(Path(profiles_root) / "general" / "ring_comparison.json", comparison)
-    log(f"[general] ring_hurts_others={comparison['ring_hurts_others']} "
-        f"recommended exclude_from_general={comparison['recommended_exclude_from_general']}")
     return manifests, comparison

@@ -1,11 +1,12 @@
 """Presentation-ready research report (Task 9): `escount report`.
 
 Writes <out>/<YYYYmmdd_HHMMSS>/ and replaces <out>/latest/ with a copy of it:
-  <case>/          for each case (4 projects, general, general_no_ring):
+  <case>/          for each case (active projects + general; default_cases(config)):
                    best_params.json, results.tsv, progress.png, param_importance.png,
                    param_sensitivity.png, per_image.csv
-  comparison/      project_vs_general.csv + .png, ring_inclusion.png, roi_count_vs_hit.png,
-                   param_importance_heatmap.png, latency.png
+  comparison/      project_vs_general.csv + .png, roi_count_vs_hit.png, param_importance_heatmap.png,
+                   latency.png; ring_inclusion.png only when `general_no_ring` is reported (Ring-type
+                   active). With Ring-type in excluded_projects summary.md states why it is excluded.
   summary.md, report.html (self-contained: every figure as data:image/png;base64, tables inline)
 Every listed file is always written; when a study has too little data an explanatory placeholder
 figure / header-only table is produced instead. All figures: 16:9, 200 dpi, Microsoft JhengHei.
@@ -20,7 +21,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from escount.models.train import GENERAL_CASES, RING_CASE, load_general_config, production_general
+from escount.models.train import (
+    GENERAL_CASES, RING_CASE, active_projects, general_cases, load_general_config, production_general,
+)
 from escount.research import figures
 from escount.research.daemon import (
     BEST_NAME, DEFAULT_STORAGE, PER_IMAGE_COLUMNS, PER_IMAGE_NAME, TSV_COLUMNS, TSV_NAME, adopted_hash, load_study,
@@ -29,11 +32,22 @@ from escount.research.daemon import (
 from escount.research.evaluate import wilson_interval
 
 PROJECT_CASES = ("20260904-thinkness02_postition1", "20260904-thinkness02_postition2", "Ring-type", "T-type")
-DEFAULT_CASES = PROJECT_CASES + GENERAL_CASES
 CASE_FILES = ("best_params.json", "results.tsv", "progress.png", "param_importance.png", "param_sensitivity.png",
               "per_image.csv")
-COMPARISON_FILES = ("project_vs_general.csv", "project_vs_general.png", "ring_inclusion.png", "roi_count_vs_hit.png",
+RING_FILE = "ring_inclusion.png"
+COMPARISON_FILES = ("project_vs_general.csv", "project_vs_general.png", "roi_count_vs_hit.png",
                     "param_importance_heatmap.png", "latency.png")
+
+
+def default_cases(config):
+    """Active projects (PROJECT_CASES minus excluded_projects) + the General cases in use."""
+    projects = active_projects(PROJECT_CASES, config)
+    return projects + general_cases(config, projects)
+
+
+def comparison_files(cases):
+    """COMPARISON_FILES, plus ring_inclusion.png when general_no_ring is part of the report."""
+    return COMPARISON_FILES + ((RING_FILE,) if "general_no_ring" in cases else ())
 CORE_PARAMS = ("w", "D", "model", "roi_cap")
 SERIES = (("project", "LOIO"), ("general", "LOIO"), ("general", "LOPO"), ("general_no_ring", "LOIO"),
           ("general_no_ring", "LOPO"))
@@ -214,14 +228,16 @@ def plot_project_vs_general(path, table, projects):
     if table.empty:
         return figures.placeholder(path, "Project vs General", "尚無任何研究結果")
     fig, ax = figures.new_figure()
-    width = 0.8 / len(SERIES)
-    for index, (model, scheme) in enumerate(SERIES):
+    series = [(i, m, s) for i, (m, s) in enumerate(SERIES)
+              if ((table["model"] == m) & (table["scheme"] == s)).any()]
+    width = 0.8 / len(series)
+    for slot, (index, model, scheme) in enumerate(series):
         part = table[(table["model"] == model) & (table["scheme"] == scheme)].set_index("project")
         xs, ys, low, high, labels = [], [], [], [], []
         for position, project in enumerate(projects):
             if project in part.index:
                 row = part.loc[project]
-                xs.append(position + (index - (len(SERIES) - 1) / 2) * width)
+                xs.append(position + (slot - (len(series) - 1) / 2) * width)
                 ys.append(row["hit_rate"])
                 low.append(row["hit_rate"] - row["wilson_low"])
                 high.append(row["wilson_high"] - row["hit_rate"])
@@ -233,7 +249,8 @@ def plot_project_vs_general(path, table, projects):
     ax.set_xticks(range(len(projects)), [short(p) for p in projects])
     ax.set_ylabel("exact hit rate (誤差線 = Wilson 95% CI)")
     ax.set_ylim(0, 1.35)
-    ax.set_title("Project model vs General vs General(no Ring)：LOIO / LOPO 命中率")
+    no_ring = any(model == "general_no_ring" for _, model, _ in series)
+    ax.set_title("Project model vs General" + (" vs General(no Ring)" if no_ring else "") + "：LOIO / LOPO 命中率")
     ax.grid(axis="y", alpha=0.3)
     ax.legend(ncol=3, loc="upper right")
     return figures.save(fig, path)
@@ -387,7 +404,16 @@ def lopo_table(data):
     return pd.DataFrame(rows)
 
 
-def write_summary(path, created, summary, comparison, lopo, decision, config):
+def excluded_decision(config):
+    """Decision text when Ring-type is an excluded project (no with/without Ring comparison)."""
+    reason = config.get("excluded_reason", {}).get(RING_CASE, "")
+    text = (f"Ring-type 已依使用者決定排除於訓練與研究之外（configs/general.json excluded_projects）"
+            + (f"：{reason}" if reason else "") + "。Data/Ring-type 原始檔案不變；General 僅以其餘專案訓練"
+            "（不另產生 general_no_ring）；自 excluded_projects 移除即可重新納入。")
+    return {"available": False, "text": text}
+
+
+def write_summary(path, created, summary, comparison, lopo, decision, config, files=COMPARISON_FILES):
     lines = ["# ESCounting V4 研究報告 (autoresearch)", "",
              f"產生時間：{created}", "",
              "- 唯一指標：exact hit rate，round(預測) == GT（無 MAE、無 ±1 容許）。",
@@ -397,12 +423,13 @@ def write_summary(path, created, summary, comparison, lopo, decision, config):
              "## 各案例最佳結果", "", markdown_table(summary),
              "## General 的 LOPO（跨專案）", "", markdown_table(lopo),
              "## Ring-type 決策", "", decision["text"], "",
-             f"- configs/general.json exclude_from_general = {json.dumps(config['exclude_from_general'], ensure_ascii=False)}；"
+             f"- configs/general.json excluded_projects = {json.dumps(config['excluded_projects'], ensure_ascii=False)}；"
+             f"exclude_from_general = {json.dumps(config['exclude_from_general'], ensure_ascii=False)}；"
              f"正式 General 模型 = `{production_general(config)}`", "",
              "## Project vs General（Wilson 95% CI）", "", markdown_table(comparison.round(4)),
              "## 檔案", "",
              "- 每個案例資料夾：" + "、".join(CASE_FILES),
-             "- comparison/：" + "、".join(COMPARISON_FILES),
+             "- comparison/：" + "、".join(files),
              "- report.html：所有圖表與表格內嵌的單一檔案（可離線開啟）", ""]
     Path(path).write_text("\n".join(lines), encoding="utf-8")
 
@@ -418,7 +445,7 @@ def _table(frame):
     return frame.to_html(index=False, escape=True, border=0, na_rep="")
 
 
-def write_html(path, out_dir, created, cases, summary, comparison, lopo, decision):
+def write_html(path, out_dir, created, cases, summary, comparison, lopo, decision, files=COMPARISON_FILES):
     style = ("body{font-family:'Microsoft JhengHei',sans-serif;margin:24px;background:#fafafa;color:#222}"
              "table{border-collapse:collapse;margin:8px 0 16px;font-size:14px}"
              "th,td{border:1px solid #ccc;padding:4px 8px;text-align:left}th{background:#e8eef6}"
@@ -432,7 +459,7 @@ def write_html(path, out_dir, created, cases, summary, comparison, lopo, decisio
              "<section><h2>各案例最佳結果</h2>", _table(summary), "<h2>General 的 LOPO（跨專案）</h2>", _table(lopo),
              f"<h2>Ring-type 決策</h2><p>{html.escape(decision['text'])}</p></section>",
              "<section><h2>比較 (comparison)</h2>", _table(comparison.round(4))]
-    for name in COMPARISON_FILES:
+    for name in files:
         if name.endswith(".png"):
             parts.append(_img(out_dir / "comparison" / name, f"comparison/{name}"))
     parts.append("</section>")
@@ -460,15 +487,18 @@ def _out_dir(out_root, timestamp):
     return out_dir
 
 
-def build_report(out_root="outputs/research_report", cases=DEFAULT_CASES, research_root="research",
+def build_report(out_root="outputs/research_report", cases=None, research_root="research",
                  candidates_root="candidates", storage=DEFAULT_STORAGE, profiles_root="outputs/projects",
                  config_path="configs/general.json", log=print):
-    """Write the timestamped report directory and refresh <out_root>/latest/. Returns the timestamp dir."""
+    """Write the timestamped report directory and refresh <out_root>/latest/. Returns the timestamp dir.
+    cases=None -> default_cases(config): excluded_projects are left out."""
+    config = load_general_config(config_path)
+    cases = list(cases) if cases else default_cases(config)
+    files = comparison_files(cases)
     figures.setup_style()
     created = datetime.now()
     out_dir = _out_dir(out_root, created.strftime("%Y%m%d_%H%M%S"))
     out_dir.mkdir(parents=True)
-    cases = list(cases)
     data = {case: case_data(case, research_root, candidates_root, storage, profiles_root) for case in cases}
     importance = {}
     for case, item in data.items():
@@ -498,17 +528,21 @@ def build_report(out_root="outputs/research_report", cases=DEFAULT_CASES, resear
     comparison = comparison_rows(data, projects)
     comparison.to_csv(comparison_dir / "project_vs_general.csv", index=False, encoding="utf-8")
     plot_project_vs_general(comparison_dir / "project_vs_general.png", comparison, projects)
-    decision = ring_decision(data)
-    plot_ring_inclusion(comparison_dir / "ring_inclusion.png", decision)
+    if RING_FILE in files:
+        decision = ring_decision(data)
+        plot_ring_inclusion(comparison_dir / RING_FILE, decision)
+    elif RING_CASE in config["excluded_projects"]:
+        decision = excluded_decision(config)
+    else:
+        decision = {"available": False, "text": "本報告不含 general_no_ring，未比較 Ring-type 納入與否"}
     plot_roi_vs_hit(comparison_dir / "roi_count_vs_hit.png", data)
     plot_importance_heatmap(comparison_dir / "param_importance_heatmap.png", cases, importance)
     plot_latency(comparison_dir / "latency.png", data, profiles_root)
     summary = pd.DataFrame([case_summary(case, data[case]) for case in cases])
     lopo = lopo_table(data)
-    config = load_general_config(config_path)
     stamp = created.isoformat(timespec="seconds")
-    write_summary(out_dir / "summary.md", stamp, summary, comparison, lopo, decision, config)
-    write_html(out_dir / "report.html", out_dir, stamp, cases, summary, comparison, lopo, decision)
+    write_summary(out_dir / "summary.md", stamp, summary, comparison, lopo, decision, config, files)
+    write_html(out_dir / "report.html", out_dir, stamp, cases, summary, comparison, lopo, decision, files)
     latest = Path(out_root) / "latest"
     if latest.exists():
         shutil.rmtree(latest)

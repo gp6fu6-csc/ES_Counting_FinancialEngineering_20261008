@@ -117,16 +117,19 @@ def select_project(case, cache_root="outputs/features", profiles_root="outputs/p
 
 
 def select_general(cache_root="outputs/features", profiles_root="outputs/projects", device="cuda",
-                   max_rois=MAX_ROIS):
-    """Select x_norm-bin ROI units for `general` and `general_no_ring` (stored in their manifests)."""
+                   max_rois=MAX_ROIS, config_path="configs/general.json"):
+    """Select x_norm-bin ROI units for the General cases in use (`general`, plus `general_no_ring`
+    while Ring-type is active), stored in their manifests."""
     from pathlib import Path
 
     from escount.features.cache import load_features
     from escount.models.store import read_manifest
-    from escount.models.train import GENERAL_CASES, general_table, make_procedure
+    from escount.models.train import general_cases, general_table, load_general_config, make_procedure
 
     results = {}
-    for name in GENERAL_CASES:
+    for name in general_cases(load_general_config(config_path)):
+        if name != "general" and not (Path(profiles_root) / name / "model" / "manifest.json").is_file():
+            continue
         model_dir = Path(profiles_root) / name / "model"
         manifest = read_manifest(model_dir)
         table = general_table({case: load_features(case, cache_root) for case in manifest["cases"]})

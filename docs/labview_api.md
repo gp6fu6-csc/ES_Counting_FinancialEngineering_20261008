@@ -42,7 +42,7 @@ uv run escount serve --host 0.0.0.0 --port 8000 --api-key <自訂金鑰> --root 
 ```json
 {"projects": [{"case": "T-type", "quality_status": "ok", "angle_deg": -1.0875, "reference_image": "171.png",
                "has_model": true, "selected_rois": 1, "loaded_models": ["project"]}],
- "general_models": ["general", "general_no_ring"],
+ "general_models": ["general"],
  "current": {"case": "T-type", "model": "project", "model_case": "T-type", "method": "baseline",
              "model_type": "ridge", "roi_count": 1, "image_size": {"width": 2448, "height": 2048}}}
 ```

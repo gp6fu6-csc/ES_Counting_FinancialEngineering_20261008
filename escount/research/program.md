@@ -31,7 +31,9 @@ settings per case. These rules are fixed; a research run must not change them.
    automatic CPU fallback. Nothing leaves the machine.
 10. **Determinism / resume.** One Optuna study per case in `research/study.db` (TPE, seed = 0 + number of
     trials already in the study); `load_if_exists=True` keeps trial numbers contiguous after a restart.
-    Cases are visited round-robin: the 4 projects, `general`, `general_no_ring`.
+    Cases are visited round-robin: every project not in `excluded_projects` of `configs/general.json`
+    (Ring-type is excluded by user decision: LOIO 3/6) and `general` (`general_no_ring` only while
+    Ring-type is active). A resumed case must use the same project set (else use fresh storage/roots).
 
 ## Search space
 

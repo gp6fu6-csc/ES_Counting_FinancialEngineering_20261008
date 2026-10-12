@@ -74,10 +74,28 @@ def _case_list(args):
     return [resolve_project(args.project, args.data_root).name]
 
 
+def _active_case_list(args):
+    """_case_list without the excluded_projects of --config (an explicitly named excluded case is an error)."""
+    from escount.models.train import active_projects, check_active, load_general_config
+
+    config = load_general_config(args.config)
+    cases = _case_list(args)
+    if getattr(args, "all", False) or not args.project:
+        skipped = [case for case in cases if case not in active_projects(cases, config)]
+        if skipped:
+            print(f"skipping excluded_projects {skipped} ({args.config})")
+        return active_projects(cases, config)
+    try:
+        check_active(cases[0], config)
+    except ValueError as error:
+        raise SystemExit(f"escount {args.command}: {error} ({args.config})") from error
+    return cases
+
+
 def cmd_prepare(args):
     from escount.features.cache import prepare
 
-    for case in _case_list(args):
+    for case in _active_case_list(args):
         start = time.perf_counter()
         path, rebuilt = prepare(case, args.data_root, args.profiles_root, args.cache_root, args.workers, force=args.force)
         import pyarrow.parquet as pq
@@ -113,7 +131,7 @@ def cmd_train(args):
                                       args.max_rows_per_image)
         print(f"ring comparison -> {(Path(args.profiles_root) / 'general' / 'ring_comparison.json').resolve()}")
     else:
-        train_project(resolve_project(args.project, args.data_root).name, args.cache_root, args.profiles_root,
+        train_project(_active_case_list(args)[0], args.cache_root, args.profiles_root,
                       args.device, args.max_rows_per_image)
     return 0
 
@@ -129,7 +147,8 @@ def cmd_select_rois(args):
     from escount.models.select_rois import select_general, select_project
 
     if args.general:
-        for name, result in select_general(args.cache_root, args.profiles_root, args.device, args.max_rois).items():
+        for name, result in select_general(args.cache_root, args.profiles_root, args.device, args.max_rois,
+                                           args.config).items():
             _print_selection(name, result)
     else:
         case = resolve_project(args.project, args.data_root).name
@@ -203,9 +222,9 @@ def cmd_research(args):
 
 
 def cmd_report(args):
-    from escount.research.report import DEFAULT_CASES, build_report
+    from escount.research.report import build_report
 
-    build_report(args.out, args.cases or DEFAULT_CASES, args.research_root, args.candidates_root, args.storage,
+    build_report(args.out, args.cases, args.research_root, args.candidates_root, args.storage,
                  args.profiles_root, args.config)
     return 0
 
@@ -247,7 +266,8 @@ def _research_paths(command):
     command.add_argument("--research-root", default="research", help="results.tsv root (default: research)")
     command.add_argument("--candidates-root", default="candidates", help="candidate root (default: candidates)")
     command.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")
-    command.add_argument("--config", default="configs/general.json", help="General config (exclude_from_general)")
+    command.add_argument("--config", default="configs/general.json",
+                         help="General config (excluded_projects, exclude_from_general)")
 
 
 def _common(command, cache=True):
@@ -261,7 +281,8 @@ def _target(command, general=False):
     group = command.add_mutually_exclusive_group(required=True)
     group.add_argument("--project", help="case id (Data folder name) or project folder path")
     if general:
-        group.add_argument("--general", action="store_true", help="General models (general, general_no_ring)")
+        group.add_argument("--general", action="store_true",
+                           help="General model(s): general (+ general_no_ring while Ring-type is active)")
     else:
         group.add_argument("--all", action="store_true", help="every case under --data-root")
 
@@ -286,6 +307,7 @@ def build_parser():
     _common(prepare)
     prepare.add_argument("--workers", type=int, default=None, help="worker processes (default: os.cpu_count())")
     prepare.add_argument("--force", action="store_true", help="rebuild even if the cache is fresh")
+    prepare.add_argument("--config", default="configs/general.json", help="General config (excluded_projects)")
     prepare.set_defaults(func=cmd_prepare)
 
     evaluate = sub.add_parser("evaluate", help="fixed exact-hit evaluator; --baseline re-runs the legacy V3 LOO")
@@ -300,7 +322,8 @@ def build_parser():
     _common(train)
     train.add_argument("--device", choices=("cuda", "cpu"), default="cuda", help="XGBoost device (cuda falls back to cpu)")
     train.add_argument("--max-rows-per-image", type=int, default=1000, help="training rows per image (default 1000)")
-    train.add_argument("--config", default="configs/general.json", help="General config (exclude_from_general)")
+    train.add_argument("--config", default="configs/general.json",
+                       help="General config (excluded_projects, exclude_from_general)")
     train.set_defaults(func=cmd_train)
 
     select = sub.add_parser("select-rois", help="greedy minimal-ROI selection (Grouped-LOO exact hit)")
@@ -308,6 +331,7 @@ def build_parser():
     _common(select)
     select.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
     select.add_argument("--max-rois", type=int, default=25)
+    select.add_argument("--config", default="configs/general.json", help="General config (excluded_projects)")
     select.set_defaults(func=cmd_select_rois)
 
     bench = sub.add_parser("benchmark", help="single-thread CPU latency of the selected ROIs (< 1 s per image)")
@@ -334,7 +358,7 @@ def build_parser():
     budget = research.add_mutually_exclusive_group(required=True)
     budget.add_argument("--trials", type=int, help="new trials per case (round-robin)")
     budget.add_argument("--hours", type=float, help="total wall-clock hours (round-robin)")
-    research.add_argument("--cases", nargs="+", help="case ids (default: every project + general + general_no_ring)")
+    research.add_argument("--cases", nargs="+", help="case ids (default: every project not in excluded_projects + general)")
     research.add_argument("--data-root", default="Data", help="root folder of case ids (default: Data)")
     research.add_argument("--device", choices=("cuda", "cpu"), default="cuda", help="XGBoost device (cuda falls back to cpu)")
     research.add_argument("--workers", type=int, default=None, help="feature worker processes (default: os.cpu_count())")
@@ -343,12 +367,12 @@ def build_parser():
 
     report = sub.add_parser("report", help="presentation report -> outputs/research_report/<timestamp>/ + latest/")
     report.add_argument("--out", default="outputs/research_report", help="report root (default: outputs/research_report)")
-    report.add_argument("--cases", nargs="+", help="case ids (default: the 4 projects + general + general_no_ring)")
+    report.add_argument("--cases", nargs="+", help="case ids (default: projects not in excluded_projects + general)")
     _research_paths(report)
     report.set_defaults(func=cmd_report)
 
     adopt = sub.add_parser("adopt", help="copy candidates/<case>/ into the production profile (manual adoption)")
-    adopt.add_argument("case", help="case id (project, general or general_no_ring)")
+    adopt.add_argument("case", help="case id (project or general)")
     adopt.add_argument("--candidates-root", default="candidates", help="candidate root (default: candidates)")
     adopt.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")
     adopt.set_defaults(func=cmd_adopt)

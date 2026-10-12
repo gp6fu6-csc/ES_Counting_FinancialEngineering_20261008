@@ -13,7 +13,8 @@ from escount.research.daemon import (
     TSV_COLUMNS, Researcher, TrialBudget, adopt, keep_or_discard, load_study, read_tsv,
 )
 from escount.research.evaluate import rank_key
-from escount.research.report import CASE_FILES, COMPARISON_FILES, build_report
+from escount.models.train import load_general_config
+from escount.research.report import CASE_FILES, COMPARISON_FILES, build_report, default_cases
 from feature_tables import synthetic_table
 
 SEEDS = {"P1": 0, "P2": 1}
@@ -127,9 +128,10 @@ class ReportTests(unittest.TestCase):
                                  "\t".join(TSV_COLUMNS))
             for name in COMPARISON_FILES:
                 self.assertTrue((out / "comparison" / name).is_file(), name)
+            self.assertFalse((out / "comparison" / "ring_inclusion.png").exists())   # no general_no_ring case
             self.assertTrue((out / "summary.md").is_file())
             pngs = sorted(out.rglob("*.png"))
-            self.assertEqual(len(pngs), 3 * len(cases) + 5)
+            self.assertEqual(len(pngs), 3 * len(cases) + 4)
             for path in pngs:
                 with Image.open(path) as image:
                     self.assertEqual(image.size, (3200, 1800), path)
@@ -144,6 +146,46 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(parser.links, [])
             latest = root / "report" / "latest"
             self.assertEqual(tree_hashes(latest), tree_hashes(out))
+
+
+class ExclusionTests(unittest.TestCase):
+    def test_excluded_project_is_not_researched_or_reported(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            config = root / "general.json"
+            config.write_text(json.dumps({"excluded_projects": ["Ring-type"], "exclude_from_general": ["Ring-type"],
+                                          "excluded_reason": {"Ring-type": "LOIO 3/6"}}), encoding="utf-8")
+            daemon = Researcher(["P1", "P2", "Ring-type"], None, storage=f"sqlite:///{(root / 'study.db').as_posix()}",
+                                research_root=root / "research", candidates_root=root / "candidates",
+                                profiles_root=root / "profiles", config_path=config, device="cpu",
+                                table_fn=synthetic_fn, log=lambda *_: None)
+            self.assertEqual(daemon.projects, ["P1", "P2"])
+            self.assertEqual(daemon.cases, ["P1", "P2", "general"])
+            self.assertEqual(daemon.members["general"], ["P1", "P2"])
+            with self.assertRaises(ValueError):
+                Researcher(["P1", "Ring-type"], ["Ring-type"], config_path=config, table_fn=synthetic_fn)
+            self.assertEqual(default_cases(load_general_config(config)),
+                             ["20260904-thinkness02_postition1", "20260904-thinkness02_postition2", "T-type", "general"])
+            out = build_report(root / "report", None, root / "research", root / "candidates",
+                               f"sqlite:///{(root / 'study.db').as_posix()}", root / "profiles", config,
+                               log=lambda *_: None)
+            self.assertEqual(sorted(p.name for p in out.iterdir() if p.is_dir()),
+                             ["20260904-thinkness02_postition1", "20260904-thinkness02_postition2", "T-type",
+                              "comparison", "general"])
+            self.assertFalse((out / "comparison" / "ring_inclusion.png").exists())
+            summary = (out / "summary.md").read_text(encoding="utf-8")
+            self.assertIn("Ring-type 已依使用者決定排除", summary)
+            self.assertIn("LOIO 3/6", summary)
+            self.assertNotIn("general_no_ring |", summary)
+
+    def test_resume_with_different_projects_is_refused(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            researcher(root, ["general"]).run(trials=1)          # general = P1 + P2
+            with self.assertRaises(ValueError):
+                Researcher(["P1"], ["general"], storage=f"sqlite:///{(root / 'study.db').as_posix()}",
+                           research_root=root / "research", candidates_root=root / "candidates",
+                           config_path=root / "missing_general.json", table_fn=synthetic_fn)
 
 
 if __name__ == "__main__":

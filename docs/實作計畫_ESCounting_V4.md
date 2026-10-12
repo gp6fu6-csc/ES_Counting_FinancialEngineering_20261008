@@ -80,13 +80,15 @@ graph LR
 | `<case>/param_sensitivity.png` | 各參數對命中率影響 |
 | `<case>/per_image.csv` | GT、預測、是否命中（LOO） |
 | `comparison/project_vs_general.{csv,png}` | LOIO / LOPO 命中率 + Wilson 信賴區間 |
-| `comparison/ring_inclusion.png` | General 含 / 不含 Ring-type |
+| `comparison/ring_inclusion.png` | General 含 / 不含 Ring-type（僅在 Ring-type 重新納入時產生；目前排除，改於 summary.md 說明） |
 | `comparison/roi_count_vs_hit.png` | ROI 數量 vs 命中率 |
 | `comparison/param_importance_heatmap.png` | 參數 × 專案重要度 |
 | `comparison/latency.png` | 推論延遲 |
 | `summary.md`、`report.html` | 自包含報告（嵌入所有圖表） |
 
-case 包含：4 個專案、`general`、`general_no_ring`。圖片統一 16:9、200 dpi、Microsoft JhengHei 字型。
+case 包含：position1、position2、T-type、`general`。
+
+> 決策更新：Ring-type 分析結果不可靠（LOIO 完全命中僅 3/6），已依使用者決定以設定（`excluded_projects` / `exclude_from_general`）排除於訓練與正式執行之外；`Data/Ring-type` 原始檔案不變，日後移出排除清單即可重新納入。圖片統一 16:9、200 dpi、Microsoft JhengHei 字型。
 
 ## 6. 任務清單
 

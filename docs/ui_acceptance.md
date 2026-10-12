@@ -35,6 +35,6 @@
 - [ ] MACD 的 EMA1 / EMA2 / DEA 與 KD 的 RSV / K / D 預載模型訓練參數；在欄位輸入新值約 0.4 秒後自動重新預測，`N_pred`、圖形與「計數」即時更新，縮放區間保持不變。
 - [ ] 模型不使用某組參數時（例如 baseline 指標是 KD），提示「此模型的 N_pred 不使用 MACD 參數（僅更新圖表）」；ML 模型兩組參數都會影響 `N_pred`。
 - [ ] 「恢復模型訓練參數」回到預載值且 `N_pred` 回到原預測。
-- [ ] 下拉切換 General 模型後 `N_pred` 以 General 模型重算（標示 model_case = general 或 general_no_ring），參數重新預載。
+- [ ] 下拉切換 General 模型後 `N_pred` 以 General 模型重算（標示 model_case = general；Ring-type 已排除，不再有 general_no_ring），參數重新預載。
 - [ ] 輸入 0 或空白參數時顯示錯誤訊息（422），修正後恢復。
 - [ ] `Data/` 內檔案不被修改（`uv run python scripts/check_data_sha.py`）。

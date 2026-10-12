@@ -1,6 +1,7 @@
 """Autoresearch daemon (Task 9). Rules and search space: escount/research/program.md.
 
-One Optuna study per case (4 projects + `general` + `general_no_ring`) in one SQLite storage
+One Optuna study per case (active projects + `general`, plus `general_no_ring` only while Ring-type
+is not in excluded_projects of configs/general.json) in one SQLite storage
 (default sqlite:///research/study.db). Studies are opened with load_if_exists=True, so a restarted
 run continues the trial numbering contiguously. Cases are visited round-robin, one trial at a time,
 for `trials` new trials per case or until `hours` have elapsed.
@@ -31,8 +32,8 @@ from escount.features.extract import (
     DIRECTIONS, FEATURE_INDICATORS, AugmentGrid, config_hash, feature_config, indicator_id,
 )
 from escount.models.train import (
-    GENERAL_BASE, GENERAL_CASES, PROJECT_BASE, aggregate, fit_model, general_variants, load_general_config,
-    subsample,
+    GENERAL_BASE, GENERAL_CASES, PROJECT_BASE, active_projects, aggregate, fit_model, general_variants,
+    load_general_config, subsample,
 )
 from escount.research.evaluate import evaluate, exact_hit, hits_by_case, rank_key, wilson_interval
 from escount.signals.roi_bank import MIN_SIDE_MARGIN
@@ -306,14 +307,22 @@ class Researcher:
                  candidates_root="candidates", data_root="Data", profiles_root="outputs/projects",
                  config_path="configs/general.json", device="cuda", workers=None, budget=TrialBudget(), seed=SEED,
                  table_fn=None, log=print):
-        self.projects = sorted(projects)
-        variants = general_variants(self.projects, load_general_config(config_path)["exclude_from_general"])
+        config = load_general_config(config_path)
+        self.projects = sorted(active_projects(projects, config))       # excluded_projects never researched
+        variants = general_variants(self.projects, config["exclude_from_general"])
         self.members = {**{case: [case] for case in self.projects}, **variants}
-        self.cases = list(cases) if cases else self.projects + list(GENERAL_CASES)
+        self.cases = list(cases) if cases else self.projects + list(variants)
         unknown = [case for case in self.cases if case not in self.members]
         if unknown:
-            raise ValueError(f"unknown research cases {unknown}; expected {sorted(self.members)}")
+            raise ValueError(f"unknown or excluded research cases {unknown}; expected {sorted(self.members)}")
         self.storage, self.research_root, self.candidates_root = storage, Path(research_root), Path(candidates_root)
+        for case in self.cases:                 # a resumed study must use the same project data
+            path = self.candidates_root / case / BEST_NAME
+            if path.is_file():
+                previous = json.loads(path.read_text(encoding="utf-8")).get("projects")
+                if previous is not None and sorted(previous) != sorted(self.members[case]):
+                    raise ValueError(f"{path} was researched on projects {previous}, now {self.members[case]}; "
+                                     f"use a fresh --storage / --research-root / --candidates-root")
         self.data_root, self.profiles_root, self.device, self.workers = data_root, profiles_root, device, workers
         self.budget, self.seed, self.log = budget, seed, log
         self.table_fn = table_fn or self.feature_table

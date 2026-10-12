@@ -26,6 +26,20 @@ uv run escount legacy-count predict --params outputs/es_counting/T-type --input 
 uv run escount legacy-rotate --input Data/T-type/160.png --output-dir outputs/rotation_160
 ```
 
+## 排除的專案（Ring-type 例外）
+
+Ring-type 分析結果不可靠（Project 模型 LOIO 完全命中僅 3/6，legacy 1/6），依使用者決定視為例外，
+以設定排除於 `prepare --all`、`train`、`research`、`report` 與 General 模型之外；`Data/Ring-type` 原始檔不變。
+設定位於 `configs/general.json`：
+
+```json
+{"excluded_projects": ["Ring-type"], "exclude_from_general": ["Ring-type"]}
+```
+
+重新納入：自 `excluded_projects` 移除 `Ring-type`（若也自 `exclude_from_general` 移除，General 將包含 Ring-type；
+保留時會同時訓練 `general` 與 `general_no_ring` 供比較），再重跑 `prepare` / `train` / `research` / `report`。
+研究結果與專案組合綁定：更改排除清單後請使用新的 `--storage` / `--research-root` / `--candidates-root`。
+
 ## 專案結構
 
 ```

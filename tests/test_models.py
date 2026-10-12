@@ -88,6 +88,25 @@ class TrainingTests(unittest.TestCase):
         self.assertEqual(variants, {"general": ["P1", "Ring-type"], "general_no_ring": ["P1"]})
         self.assertEqual(general_variants(tables)["general"], ["P1", "Ring-type", "T-type"])
 
+    def test_excluded_projects_drop_ring_and_general_no_ring(self):
+        config = {"excluded_projects": ["Ring-type"], "exclude_from_general": ["Ring-type"]}
+        cases = ["P1", "Ring-type", "T-type"]
+        active = train.active_projects(cases, config)
+        self.assertEqual(active, ["P1", "T-type"])
+        self.assertEqual(general_variants(active, config["exclude_from_general"]), {"general": ["P1", "T-type"]})
+        self.assertEqual(train.general_cases(config), ["general"])
+        self.assertEqual(train.production_general(config), "general")
+        with self.assertRaises(ValueError):
+            train.check_active("Ring-type", config)
+        enabled = {"excluded_projects": [], "exclude_from_general": ["Ring-type"]}   # re-enabled Ring-type
+        self.assertEqual(train.general_cases(enabled, cases), ["general", "general_no_ring"])
+        self.assertEqual(train.production_general(enabled), "general_no_ring")
+
+    def test_committed_config_excludes_ring(self):
+        config = train.load_general_config(Path(__file__).resolve().parents[1] / "configs" / "general.json")
+        self.assertEqual(config["excluded_projects"], ["Ring-type"])
+        self.assertIn("Ring-type", config["exclude_from_general"])
+
     def test_scale_normalised_features_have_no_absolute_px(self):
         table = synthetic_table(images_per_case=2, rows_per_image=3)
         x = feature_frame(table, scale_normalised=True)
