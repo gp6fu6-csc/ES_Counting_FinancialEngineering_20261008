@@ -66,6 +66,7 @@ class ProjectProfile:
     valid_region: dict
     reference_image: str
     created: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    selected_rois: list = field(default_factory=list)   # written by `escount select-rois` (Task 7)
 
     def to_json(self):
         return json.dumps(asdict(self), ensure_ascii=False, indent=2) + "\n"
