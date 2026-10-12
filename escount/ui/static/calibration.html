@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESCounting V4 · 校正</title>
+  <link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+<div id="app" v-cloak>
+  <header class="topbar">
+    <h1>ESCounting V4<span>校正 Calibration</span></h1>
+    <nav aria-label="頁面">
+      <a href="/ui/calibration.html" class="active" aria-current="page">校正</a>
+      <a href="/ui/results.html">結果</a>
+    </nav>
+    <label class="apikey">API Key
+      <input type="password" v-model="apiKey" @change="saveKey" autocomplete="off" placeholder="(本機可留空)">
+    </label>
+  </header>
+
+  <main class="layout">
+    <aside class="panel side" aria-label="專案與影像">
+      <label class="field"><span>選擇資料夾</span>
+        <select v-model="caseId" @change="loadCase">
+          <option disabled value="">— 選擇專案 —</option>
+          <option v-for="c in cases" :key="c" :value="c">{{ c }}</option>
+        </select>
+      </label>
+      <div class="list" role="listbox" aria-label="影像清單">
+        <button v-for="name in images" :key="name" class="item" role="option" :aria-selected="name === reference"
+                :class="{ active: name === reference }" @click="reference = name">
+          <span>{{ name }}</span><span v-if="name === loadedReference" class="mark">參考</span>
+        </button>
+      </div>
+      <button class="primary" :disabled="!reference || busy" @click="loadReference">載入參考影像</button>
+      <p class="legend">影像尺寸 {{ imageSize.width }} × {{ imageSize.height }} px</p>
+    </aside>
+
+    <section class="panel stage" aria-label="影像與 ROI">
+      <div class="tabs" role="tablist">
+        <button role="tab" :aria-selected="tab === 'rotation'" :class="{ active: tab === 'rotation' }"
+                @click="setTab('rotation')">(a) 旋轉校正 ROI</button>
+        <button role="tab" :aria-selected="tab === 'strips'" :class="{ active: tab === 'strips' }"
+                @click="setTab('strips')">(b) 計片條帶</button>
+      </div>
+      <canvas ref="canvas" tabindex="0" width="1224" height="1024"
+              :aria-label="tab === 'rotation' ? '參考影像與旋轉校正 ROI，可拖曳或用方向鍵移動選取的 ROI' : '轉正影像與計片條帶，左右方向鍵調整水平位移'"
+              @mousedown="onDown" @mousemove="onMove" @mouseup="onUp" @mouseleave="onUp" @keydown="onKey"></canvas>
+      <p class="hint" v-if="tab === 'rotation'">滑鼠拖曳 ROI；點選後按方向鍵依「位移量」移動。綠框 = 有效區域，橘線 = 有效區中線。</p>
+      <p class="hint" v-else>顯示依預覽角度轉正後的影像；黃色 = 計片條帶，紫線 = 堆疊範圍。←/→ 依「位移量」調整水平位移。</p>
+    </section>
+
+    <aside class="panel controls" aria-label="參數">
+      <label class="field"><span>位移量 (Pixel)</span>
+        <input type="number" min="1" max="500" v-model.number="step">
+      </label>
+      <template v-if="tab === 'rotation'">
+        <label class="field"><span>ROI 邊長 (≥ {{ minSide }} px，全部 ROI)</span>
+          <input type="number" :min="minSide" step="2" v-model.number="side" @change="applySide">
+        </label>
+        <div class="group"><span>選取 ROI</span>
+          <button v-for="(roi, i) in rois" :key="i" :class="{ active: i === selected }" @click="selected = i">{{ i + 1 }}</button>
+        </div>
+        <div class="group"><span>左右控制 · 中線位置（全部 ROI）</span>
+          <button @click="shiftAll(-step)" aria-label="中線左移">◀</button>
+          <button @click="shiftAll(step)" aria-label="中線右移">▶</button>
+        </div>
+        <div class="group"><span>上下控制 · 中框高低</span>
+          <button @click="shiftMiddle(-step)" aria-label="中框上移">▲</button>
+          <button @click="shiftMiddle(step)" aria-label="中框下移">▼</button>
+          <button @click="resizeMiddle(-step)" aria-label="中框縮小">− 尺寸</button>
+          <button @click="resizeMiddle(step)" aria-label="中框放大">＋ 尺寸</button>
+        </div>
+        <button @click="resetRois">恢復預設 ROI（有效區正中 3 組）</button>
+      </template>
+      <template v-else>
+        <label class="field"><span>ROI 數量 N</span><input type="number" min="1" max="64" v-model.number="strips.n"></label>
+        <label class="field"><span>ROI 寬度 w (px)</span><input type="number" min="1" v-model.number="strips.w"></label>
+        <label class="field"><span>ROI 間距 D (px，需 &gt; 2w/3 = {{ (2 * strips.w / 3).toFixed(1) }})</span>
+          <input type="number" min="1" v-model.number="strips.pitch"></label>
+        <label class="field"><span>距有效區左右 (px，≥ {{ minMargin }})</span>
+          <input type="number" v-model.number="strips.side_margin"></label>
+        <label class="field"><span>水平位移 x (px)</span><input type="number" min="0" v-model.number="strips.x_offset"></label>
+      </template>
+
+      <div class="actions">
+        <button class="primary" :disabled="!loadedReference || busy" @click="preview">預覽</button>
+        <button :disabled="!loadedReference || busy" @click="save">儲存 project.json</button>
+      </div>
+      <div class="result" v-if="result" aria-live="polite">
+        <dl>
+          <dt>品質</dt>
+          <dd :class="result.quality_status === 'ok' ? 'status-ok' : 'status-bad'">{{ result.quality_status }}</dd>
+          <dt>補償角度</dt><dd>{{ fmt(result.angle_deg) }}°</dd>
+          <dt>各 ROI 角度</dt><dd>{{ result.roi_angles_deg.map(fmt).join(' / ') }}°</dd>
+          <dt>轉正前殘差</dt><dd>{{ fmt(result.before_residual_deg) }}°</dd>
+          <dt>轉正後殘差</dt><dd>{{ fmt(result.after_residual_deg) }}°（≤ {{ result.tolerance_deg }}°）</dd>
+          <dt>條帶</dt><dd>{{ result.strips.length }} / 可用 {{ result.available_strips }}</dd>
+          <dt>堆疊列</dt><dd>{{ result.stack_extent.y0 }} – {{ result.stack_extent.y1 }}</dd>
+        </dl>
+      </div>
+      <p class="error" v-if="error" role="alert">{{ error }}</p>
+      <p class="ok" v-if="message" role="status">{{ message }}</p>
+    </aside>
+  </main>
+</div>
+<script src="/ui/vendor/vue.global.prod.js"></script>
+<script src="/ui/common.js"></script>
+<script src="/ui/calibration.js"></script>
+</body>
+</html>

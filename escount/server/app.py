@@ -7,6 +7,12 @@
   POST /infer/image                PNG/BMP bytes (multipart field "file" or raw body) -> cv2.imdecode
 OpenAPI / Swagger UI at /docs. Inference is serial (one lock), single-thread CPU, nothing is written.
 
+Web UI (static, offline, vendored Vue 3 + ECharts) at /ui/calibration.html (PDF p12) with
+  GET  /calibration/cases, GET /calibration/{case}/images, GET /calibration/{case}/image/{name}
+  POST /calibration/preview        ROIs + strips -> angle, residuals, quality, strip overlay (nothing written)
+  POST /calibration/{case}/save    same validation, then project.json + background_BW_rotated.png
+Project image folders are read from the first allowed root.
+
 Security: `escount serve` binds 127.0.0.1 by default and refuses any other host without an API key
 (check_bind). With an API key every request except /health, the OpenAPI docs and the static UI
 files needs the header X-API-Key (401 otherwise). /infer/path only reads files whose resolved path
@@ -16,20 +22,27 @@ import json
 import re
 import secrets
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal, Optional
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from escount import __version__
-from escount.calibration.calibrate import PROFILE_NAME, ProjectProfile
+from escount.calibration.calibrate import (
+    PROFILE_NAME, CalibrationConfig, CalibrationQualityError, ProjectProfile, SquareRoi, calibrate_project,
+    default_rois, estimate_angle, evaluate_angle, validate_rois, valid_region_info,
+)
+from escount.calibration.rotation_correction import rotate_image
+from escount.es_counting import list_images, pick_reference, read_gray, read_mask
 from escount.inference.engine import InferenceEngine
+from escount.signals.roi_bank import MIN_SIDE_MARGIN, build_roi_bank, check_geometry, stack_rows
 
 API_KEY_HEADER = "X-API-Key"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -39,6 +52,8 @@ IMAGE_SUFFIXES = (".png", ".bmp")
 IMAGE_MAGIC = (b"\x89PNG\r\n\x1a\n", b"BM")
 GENERAL_MODELS = ("general", "general_no_ring")
 ModelChoice = Literal["project", "general"]
+UI_DIR = Path(__file__).resolve().parent.parent / "ui" / "static"
+DEFAULT_STRIPS = {"n": 4, "w": 16, "pitch": 30, "side_margin": MIN_SIDE_MARGIN, "x_offset": 0}
 
 
 @dataclass(frozen=True)
@@ -96,6 +111,26 @@ def decode_image(data):
     return image
 
 
+def strip_layout(rotated_image, rotated_mask, strips):
+    """N adjacent counting strips (w, D, side margin, x offset) closest to the valid-region centre.
+
+    Uses the ROI bank rules (>= 50 px per-row side margin, D > 2w/3) and keeps only strips that span
+    the detected stack; raises ValueError when fewer than N strips fit.
+    """
+    bank = build_roi_bank(rotated_mask, (strips.w,), pitch=strips.pitch, side_margin=strips.side_margin,
+                          x_offset=strips.x_offset)
+    extent, kept = stack_rows(rotated_image, bank)
+    if len(kept) < strips.n:
+        raise ValueError(f"only {len(kept)} strips of w={strips.w} px, D={strips.pitch} px span the stack "
+                         f"(requested N={strips.n})")
+    centre = valid_region_info(rotated_mask)["centre_x"]
+    start = min(range(len(kept) - strips.n + 1),
+                key=lambda i: abs((kept[i].x + kept[i + strips.n - 1].x + strips.w) / 2.0 - centre))
+    chosen = kept[start:start + strips.n]
+    return {"stack_extent": {"y0": int(extent["y0"]), "y1": int(extent["y1"])}, "available_strips": len(kept),
+            "strips": [{"index": i, "x": s.x, "w": s.w, "y0": s.y0, "y1": s.y1} for i, s in enumerate(chosen, 1)]}
+
+
 class ServerState:
     """Loaded engines keyed by (case, model); the last loaded one is the default for inference."""
 
@@ -103,8 +138,56 @@ class ServerState:
         self.config = config
         self.profiles_root = Path(config.profiles_root)
         self.roots = [Path(root).resolve() for root in config.allowed_roots]
+        self.data_root = self.roots[0]            # project image folders (calibration / results pages)
         self.engines, self.current = {}, None
         self.lock = threading.Lock()
+
+    # ------------------------------------------------------------ project image folders
+    def cases(self):
+        from escount.features.cache import case_ids
+
+        return case_ids(self.data_root) if self.data_root.is_dir() else []
+
+    def case_dir(self, case):
+        folder = self.data_root / check_case(case)
+        if not folder.is_dir() or not (folder / "background_BW.png").is_file():
+            raise HTTPException(404, f"project folder {case!r} with background_BW.png not found")
+        return folder
+
+    def case_image(self, case, name):
+        """Path of an analysable image of the case (background files are never served)."""
+        images = {path.name: path for path in list_images(self.case_dir(case))}
+        if name not in images:
+            raise HTTPException(404, f"image {name!r} not found in project {case!r}")
+        return images[name]
+
+    def calibration(self, case, body):
+        """Validate ROIs and strips, estimate the angle and lay out the strips (no file is written)."""
+        case_dir = self.case_dir(case)
+        _, mask = read_mask(case_dir)
+        try:
+            reference = body.reference or pick_reference(list_images(case_dir)).name
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        image = read_gray(self.case_image(case, reference))
+        rois = [SquareRoi(roi.x, roi.y, roi.side) for roi in body.rois]
+        strips = body.strips
+        try:
+            check_geometry(strips.w, strips.pitch, strips.side_margin)
+            validate_rois(rois, mask)
+            config = CalibrationConfig(roi_side=max(roi.side for roi in rois), roi_count=len(rois))
+            angle, roi_angles = estimate_angle(image, rois)
+            result = evaluate_angle(image, mask, rois, angle, config)
+            layout = strip_layout(result["rotated_image"], result["rotated_mask"], strips)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        return {"case": case, "reference": reference, "angle_deg": angle, "roi_angles_deg": roi_angles,
+                "before_residual_deg": result["before_residual_deg"],
+                "after_residual_deg": result["after_residual_deg"],
+                "after_roi_angles_deg": result["after_roi_angles_deg"], "quality_status": result["quality_status"],
+                "tolerance_deg": config.tolerance_deg, "rois": [asdict(roi) for roi in rois],
+                "rotated_valid_region": valid_region_info(result["rotated_mask"]), **layout,
+                "strip_params": strips.model_dump(), "_config": config, "_rois": rois}
 
     def load(self, case, model="project"):
         check_case(case)
@@ -164,6 +247,34 @@ class PathRequest(BaseModel):
     path: str
     project: Optional[str] = None
     model: Optional[ModelChoice] = None
+
+
+class RoiModel(BaseModel):
+    x: int
+    y: int
+    side: int
+
+
+class StripModel(BaseModel):
+    n: int = Field(DEFAULT_STRIPS["n"], ge=1, le=64)
+    w: int = Field(DEFAULT_STRIPS["w"], ge=1, le=400)
+    pitch: int = Field(DEFAULT_STRIPS["pitch"], ge=1, le=2000)
+    side_margin: int = DEFAULT_STRIPS["side_margin"]   # < 50 is rejected by the ROI bank rules (422)
+    x_offset: int = Field(DEFAULT_STRIPS["x_offset"], ge=0, le=2000)
+
+
+class CalibrationBody(BaseModel):
+    reference: Optional[str] = None
+    rois: list[RoiModel] = Field(min_length=1, max_length=9)
+    strips: StripModel = StripModel()
+
+
+class PreviewCalibrationRequest(CalibrationBody):
+    case: str
+
+
+def _public_calibration(result):
+    return jsonable({key: value for key, value in result.items() if not key.startswith("_")})
 
 
 def _engine_info(case, model, engine):
@@ -240,4 +351,73 @@ def create_app(config=ServerConfig()):
         image = decode_image(data)
         return await run_in_threadpool(state.infer, engine, image, name or "image")
 
+    # ------------------------------------------------------------ calibration page (Task 11, PDF p12)
+    @app.get("/calibration/cases")
+    def calibration_cases():
+        return {"cases": state.cases()}
+
+    @app.get("/calibration/{case}/images")
+    def calibration_images(case: str):
+        case_dir = state.case_dir(case)
+        paths = list_images(case_dir)
+        _, mask = read_mask(case_dir)
+        try:
+            defaults = [asdict(roi) for roi in default_rois(mask)]
+        except ValueError:
+            defaults = []
+        try:
+            reference = pick_reference(paths).name
+        except ValueError:
+            reference = paths[0].name if paths else None
+        profile_path = state.profiles_root / case / PROFILE_NAME
+        profile = json.loads(ProjectProfile.load(profile_path).to_json()) if profile_path.is_file() else None
+        config = CalibrationConfig()
+        return jsonable({"case": case, "images": [path.name for path in paths], "reference": reference,
+                         "image_size": {"width": int(mask.shape[1]), "height": int(mask.shape[0])},
+                         "valid_region": valid_region_info(mask), "default_rois": defaults,
+                         "min_side": config.min_side, "default_side": config.roi_side,
+                         "min_side_margin": MIN_SIDE_MARGIN,
+                         "strips": (profile or {}).get("strip_params") or DEFAULT_STRIPS, "profile": profile})
+
+    @app.get("/calibration/{case}/image/{name}", response_class=Response,
+             responses={200: {"content": {"image/png": {}}}})
+    def calibration_image(case: str, name: str, angle: float = 0.0, max_width: int = 1224):
+        """Downscaled PNG of a project image (optionally rotated by `angle` degrees, as in inference)."""
+        if not 64 <= max_width <= 8192 or abs(angle) > 45:
+            raise HTTPException(422, "max_width must be in [64, 8192] and |angle| <= 45")
+        image = read_gray(state.case_image(case, name))
+        if angle:
+            image = rotate_image(image, angle)
+        scale = min(1.0, max_width / image.shape[1])
+        if scale < 1.0:
+            image = cv2.resize(image, (max_width, max(1, round(image.shape[0] * scale))), interpolation=cv2.INTER_AREA)
+        ok, encoded = cv2.imencode(".png", image)
+        if not ok:
+            raise HTTPException(500, "could not encode PNG")
+        return Response(encoded.tobytes(), media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.post("/calibration/preview")
+    def calibration_preview(body: PreviewCalibrationRequest):
+        return _public_calibration(state.calibration(body.case, body))
+
+    @app.post("/calibration/{case}/save")
+    def calibration_save(case: str, body: CalibrationBody):
+        """Validate like /calibration/preview, then write project.json + background_BW_rotated.png."""
+        checked = state.calibration(case, body)
+        try:
+            calibrate_project(state.case_dir(case), state.profiles_root, checked["reference"], checked["_rois"],
+                              checked["_config"])
+        except CalibrationQualityError:
+            pass                                  # the profile is written with quality_status 'quality_failure'
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        path = state.profiles_root / case / PROFILE_NAME
+        profile = ProjectProfile.load(path)
+        profile.strip_params = checked["strip_params"]
+        profile.save(path)
+        return jsonable({"saved": True, "path": str(path.resolve()), "quality_status": profile.quality_status,
+                         "profile": json.loads(profile.to_json()),
+                         "note": "geometry changed: re-run escount prepare / train / select-rois for this project"})
+
+    app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
     return app

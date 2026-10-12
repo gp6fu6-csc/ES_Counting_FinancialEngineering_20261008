@@ -67,6 +67,7 @@ class ProjectProfile:
     reference_image: str
     created: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     selected_rois: list = field(default_factory=list)   # written by `escount select-rois` (Task 7)
+    strip_params: dict = field(default_factory=dict)    # counting strips N, w, D set in the calibration UI (Task 11)
 
     def to_json(self):
         return json.dumps(asdict(self), ensure_ascii=False, indent=2) + "\n"
