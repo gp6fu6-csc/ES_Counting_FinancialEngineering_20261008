@@ -102,7 +102,7 @@ case 包含：4 個專案、`general`、`general_no_ring`。圖片統一 16:9、
 | 7 | 最少 ROI 選擇與延遲基準 | CPU < 1 秒 |
 | 8 | 推論引擎與 CLI | 端到端、輸出開關生效 |
 | 9 | 研究器常駐與簡報成果輸出 | 續跑、keep/discard、報告檔案齊全 |
-| 10 | FastAPI Server | TestClient：載入 / 推論 / API Key / 路徑越界 |
+| 10 | FastAPI Server | 行程內 ASGI 測試（不用 httpx：其相依 certifi 為 MPL-2.0，不在授權白名單）：載入 / 推論 / API Key / 路徑越界 |
 | 11 | Web 校正頁（p12） | API 測試 + 手動驗收清單 |
 | 12 | Web 結果頁（p13–14） | `/preview` 與 CLI 一致 |
 | 13 | 全量執行與定版（feature 分支 + PR） | 全測試、授權、延遲、資料 SHA 不變 |

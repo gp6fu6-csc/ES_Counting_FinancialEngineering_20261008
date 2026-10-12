@@ -38,6 +38,7 @@ PREDICTIONS_NAME = "predictions.csv"
 OUTPUT_FILES = {"corrected": "corrected.png", "analysis_plot": "analysis.png", "signals_csv": "signals.csv",
                 "result_json": "result.json"}
 FALLBACK_MARKS = FEATURE_INDICATORS[12]   # peaks, gate 0.25 (used when the baseline column is period_count)
+EDITABLE_FAMILIES = ("macd", "kd")        # indicator params editable on the results page (PDF p14)
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,24 @@ def _marks_config(manifest):
     return IndicatorConfig(config.name, config.params, config.gate, "both")
 
 
+def indicator_sources(manifest):
+    """Per UI-editable family (macd, kd): the feature indicator whose params the results page edits.
+
+    It is the model's baseline indicator when that belongs to the family, else the family's first
+    FEATURE_INDICATORS config. affects_prediction: ML models read every count column; a baseline
+    model only reads its own column.
+    """
+    column = (manifest.get("baseline") or {}).get("column", "period_count")
+    name = column[len("cnt_"):].rsplit("_", 1)[0] if column.startswith("cnt_") else None
+    sources = {}
+    for family in EDITABLE_FAMILIES:
+        configs = [config for config in FEATURE_INDICATORS if config.name == family]
+        base = next((config for config in configs if indicator_id(config) == name), None)
+        sources[family] = {"config": base or configs[0], "column": f"cnt_{indicator_id(base or configs[0])}",
+                           "affects_prediction": manifest["method"] == "ml" or base is not None}
+    return sources
+
+
 def _array_sha256(image):
     return hashlib.sha256(np.ascontiguousarray(image).tobytes()).hexdigest()
 
@@ -141,6 +160,7 @@ class InferenceEngine:
     def __init__(self, case, model_choice, model_case, runtime):
         self.case, self.model_choice, self.model_case, self.runtime = case, model_choice, model_case, runtime
         self.marks = _marks_config(runtime.manifest)
+        self.indicator_sources = indicator_sources(runtime.manifest)
         size = runtime.profile.image_size
         self.image_shape = (size["height"], size["width"]) if size else None
 
@@ -164,8 +184,38 @@ class InferenceEngine:
             runtime = _general_runtime(profile_dir, profile_dir.parent / model_case / "model", single_thread)
         return cls(profile.case, model, model_case, runtime)
 
-    def infer(self, source, name=None):
-        """N_pred of one image (uint8 gray array or file path). Returns a result dict (see module doc)."""
+    def override_rows(self, rows, kept, rotated, overrides):
+        """Copy of the feature rows whose count columns of the edited families are recomputed.
+
+        overrides = {"macd": MACDParams, "kd": KDParams}; the family's source indicator keeps its gate.
+        """
+        unknown = set(overrides) - set(EDITABLE_FAMILIES)
+        if unknown:
+            raise ValueError(f"only {EDITABLE_FAMILIES} params can be overridden, got {sorted(unknown)}")
+        rows = rows.copy()
+        ratio = self.runtime.grid.gaussian_sigma_ratio
+        items = {f"{method}|{slot.w}|{slot.x}": (slot, method) for slot, method in kept}
+        signals = {key: project(rotated, slot, method, projection_sigma(method, slot.w, ratio))
+                   for key, (slot, method) in items.items()}
+        for family, params in overrides.items():
+            source = self.indicator_sources[family]
+            config = IndicatorConfig(family, params, source["config"].gate, "both")
+            up, down = [], []
+            for key in rows["slot_key"]:
+                _, high_idx, low_idx = count(signals[key], config)
+                up.append(float(len(low_idx)))
+                down.append(float(len(high_idx)))
+            up, down = np.array(up), np.array(down)
+            column = source["column"]
+            rows[f"{column}_up"], rows[f"{column}_down"], rows[f"{column}_both"] = up, down, (up + down) / 2.0
+        return rows
+
+    def infer(self, source, name=None, overrides=None):
+        """N_pred of one image (uint8 gray array or file path). Returns a result dict (see module doc).
+
+        `overrides` ({"macd": MACDParams, "kd": KDParams}) recomputes those indicator features before
+        the model (results page live preview); None = the trained parameters.
+        """
         timings = {}
         if isinstance(source, np.ndarray):
             gray, path = source, None
@@ -182,8 +232,14 @@ class InferenceEngine:
             raise ValueError(f"image size {gray.shape} differs from the project's {self.image_shape}")
         run = self.runtime.run(gray)
         timings.update(run["timings"])
+        rows, per_roi, prediction = run["rows"], run["per_roi"], run["prediction"]
+        if overrides:
+            start = time.perf_counter()
+            rows = self.override_rows(rows, run["kept"], run["rotated"], overrides)
+            per_roi = self.runtime.roi_predictions(rows)
+            prediction = self.runtime.image_prediction(per_roi)
+            timings["override"] = 1000.0 * (time.perf_counter() - start)
         timings["total"] = sum(timings.values())
-        rows, per_roi = run["rows"], run["per_roi"]
         order = {f"{method}|{slot.w}|{slot.x}": index for index, (slot, method) in enumerate(run["kept"])}
         rank = np.argsort([order[key] for key in rows["slot_key"]], kind="stable") if len(rows) else []
         items = {f"{method}|{slot.w}|{slot.x}": (slot, method) for slot, method in run["kept"]}
@@ -198,7 +254,6 @@ class InferenceEngine:
                          "slot": slot})
         image_name = path.name if path else (name or "image")
         gt = parse_ground_truth(image_name)
-        prediction = run["prediction"]
         return {"image": image_name, "source": str(path) if path else None, "case": self.case,
                 "model": self.model_choice, "model_case": self.model_case,
                 "method": self.runtime.manifest["method"], "model_type": self.runtime.manifest["model_type"],

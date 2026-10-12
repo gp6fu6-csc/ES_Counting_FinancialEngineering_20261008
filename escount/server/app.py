@@ -11,6 +11,9 @@ Web UI (static, offline, vendored Vue 3 + ECharts) at /ui/calibration.html (PDF 
   GET  /calibration/cases, GET /calibration/{case}/images, GET /calibration/{case}/image/{name}
   POST /calibration/preview        ROIs + strips -> angle, residuals, quality, strip overlay (nothing written)
   POST /calibration/{case}/save    same validation, then project.json + background_BW_rotated.png
+and /ui/results.html (PDF p13-14) with
+  GET  /results/{case}/images      images + whether `escount infer` outputs are complete
+  POST /preview                    InferenceEngine with overridden MACD / KD params -> N_pred + chart series
 Project image folders are read from the first allowed root.
 
 Security: `escount serve` binds 127.0.0.1 by default and refuses any other host without an API key
@@ -62,6 +65,7 @@ class ServerConfig:
     allowed_roots: tuple = ("Data",)      # /infer/path may only read inside these folders
     api_key: Optional[str] = None
     general_config: str = "configs/general.json"
+    results_root: str = "outputs/infer"   # `escount infer` outputs (<case>/<image stem>/...) for the results page
 
 
 def check_bind(host, api_key):
@@ -189,7 +193,14 @@ class ServerState:
                 "rotated_valid_region": valid_region_info(result["rotated_mask"]), **layout,
                 "strip_params": strips.model_dump(), "_config": config, "_rois": rois}
 
-    def load(self, case, model="project"):
+    def cached_engine(self, case, model="project"):
+        """Engine for the results page: reuse a loaded one, else load it without changing `current`."""
+        key = (check_case(case), model)
+        if key not in self.engines:
+            self.load(case, model, make_current=False)
+        return self.engines[key]
+
+    def load(self, case, model="project", make_current=True):
         check_case(case)
         try:
             engine = InferenceEngine.load(self.profiles_root / case, model, self.profiles_root,
@@ -200,7 +211,8 @@ class ServerState:
             raise HTTPException(422, f"{case}: cannot load {model} model: {error}") from error
         with self.lock:
             self.engines[(case, model)] = engine
-            self.current = (case, model)
+            if make_current:
+                self.current = (case, model)
         return engine
 
     def engine(self, project=None, model=None):
@@ -225,15 +237,18 @@ class ServerState:
             raise HTTPException(415, "only .png or .bmp files are accepted")
         return resolved
 
-    def infer(self, engine, source, name=None):
+    def run(self, engine, source, name=None, overrides=None):
+        """engine.infer serialised by the lock, single-thread CPU; bad images -> 422."""
         from threadpoolctl import threadpool_limits
 
         try:
             with self.lock, threadpool_limits(limits=1):
-                result = engine.infer(source, name=name)
+                return engine.infer(source, name=name, overrides=overrides)
         except (ValueError, IOError) as error:
             raise HTTPException(422, str(error)) from error
-        record = InferenceEngine.result_record(result)
+
+    def infer(self, engine, source, name=None):
+        record = InferenceEngine.result_record(self.run(engine, source, name))
         for key in ("outputs", "dpi"):
             record.pop(key, None)
         return jsonable(record)
@@ -271,6 +286,61 @@ class CalibrationBody(BaseModel):
 
 class PreviewCalibrationRequest(CalibrationBody):
     case: str
+
+
+class MACDBody(BaseModel):
+    ema1: int = Field(ge=1, le=500)
+    ema2: int = Field(ge=1, le=500)
+    dea: int = Field(ge=1, le=500)
+
+
+class KDBody(BaseModel):
+    n: int = Field(ge=1, le=500)      # RSV window (px)
+    k: int = Field(ge=1, le=500)
+    d: int = Field(ge=1, le=500)
+
+
+class PreviewRequest(BaseModel):
+    case: str
+    image: str
+    model: ModelChoice = "project"
+    macd: Optional[MACDBody] = None   # None = the model's trained parameters
+    kd: Optional[KDBody] = None
+
+
+def _series(values):
+    return np.round(np.asarray(values, dtype=np.float64), 4).tolist()
+
+
+def preview_payload(engine, result, overrides):
+    """N_pred + per-ROI signal / MACD / KD series and events for the results page charts."""
+    from escount.indicators.core import kd, macd
+    from escount.indicators.counters import IndicatorConfig, count
+
+    params, configs = {}, {}
+    for family, source in engine.indicator_sources.items():
+        config = source["config"]
+        value = overrides.get(family, config.params)
+        configs[family] = IndicatorConfig(family, value, config.gate, "both")
+        params[family] = {**asdict(value), "gate": config.gate, "column": source["column"],
+                          "trained": asdict(config.params), "affects_prediction": source["affects_prediction"]}
+    rois = []
+    for roi, panel in zip(result["rois"], engine._signals(result)):
+        signal = panel["signal"]
+        lines = {"macd": macd(signal, configs["macd"].params), "kd": kd(signal, configs["kd"].params)}
+        charts = {}
+        for family, line in lines.items():
+            number, death, golden = count(signal, configs[family])
+            charts[family] = {**{name: _series(getattr(line, name)) for name in line._fields},
+                              "golden": [int(i) for i in golden], "death": [int(i) for i in death], "count": number}
+        rois.append({**{key: value for key, value in roi.items() if key != "slot"}, "signal": _series(signal),
+                     "highs": [int(i) for i in panel["high_idx"]], "lows": [int(i) for i in panel["low_idx"]],
+                     "label": panel["label"], **charts})
+    record = {key: result[key] for key in ("image", "case", "model", "model_case", "method", "model_type", "N_pred",
+                                           "gt", "hit", "timings_ms")}
+    marks = engine.marks
+    return jsonable({**record, "params": params, "marks": {"name": marks.name, "params": asdict(marks.params),
+                                                           "gate": marks.gate}, "rois": rois})
 
 
 def _public_calibration(result):
@@ -418,6 +488,49 @@ def create_app(config=ServerConfig()):
         return jsonable({"saved": True, "path": str(path.resolve()), "quality_status": profile.quality_status,
                          "profile": json.loads(profile.to_json()),
                          "note": "geometry changed: re-run escount prepare / train / select-rois for this project"})
+
+    # ------------------------------------------------------------ results page (Task 12, PDF p13-14)
+    @app.get("/results/{case}/images")
+    def results_images(case: str):
+        """Project images; `complete` = every per-image output of `escount infer` exists in results_root."""
+        from escount.es_counting import parse_ground_truth
+        from escount.inference.engine import OUTPUT_FILES
+
+        paths = list_images(state.case_dir(case))
+        out_root = Path(config.results_root) / case
+        images = []
+        for path in paths:
+            folder = out_root / path.stem
+            complete = all((folder / name).is_file() for name in OUTPUT_FILES.values())
+            stored = None
+            if complete:
+                try:
+                    stored = json.loads((folder / OUTPUT_FILES["result_json"]).read_text(encoding="utf-8")).get("N_pred")
+                except (OSError, ValueError):
+                    complete = False
+            gt = parse_ground_truth(path.name)
+            images.append({"name": path.name, "gt": gt["count"] if gt else None, "complete": complete,
+                           "stored_N_pred": stored})
+        models = [name for name, ok in (
+            ("project", (state.profiles_root / case / "model" / "manifest.json").is_file()),
+            ("general", any((state.profiles_root / g / "model" / "manifest.json").is_file() for g in GENERAL_MODELS)),
+        ) if ok]
+        return {"case": case, "images": images, "models": models, "results_root": str(out_root.resolve())}
+
+    @app.post("/preview")
+    def preview(body: PreviewRequest):
+        """InferenceEngine on a project image with optional MACD / KD parameter overrides (live N_pred)."""
+        from escount.indicators.core import KDParams, MACDParams
+
+        engine = state.cached_engine(body.case, body.model)
+        path = state.case_image(body.case, body.image)
+        overrides = {}
+        if body.macd:
+            overrides["macd"] = MACDParams(**body.macd.model_dump())
+        if body.kd:
+            overrides["kd"] = KDParams(**body.kd.model_dump())
+        result = state.run(engine, path, overrides=overrides or None)
+        return preview_payload(engine, result, overrides)
 
     app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
     return app

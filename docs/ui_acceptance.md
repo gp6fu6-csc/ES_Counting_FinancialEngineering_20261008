@@ -21,3 +21,20 @@
 - [ ] 「儲存 project.json」後顯示寫入路徑與品質；重新選擇該專案時載入剛存的 ROI 與條帶參數（`strip_params`）。儲存後須重跑 `escount prepare / train / select-rois`（畫面有提示）。
 - [ ] `Data/` 內檔案不被修改（`uv run python scripts/check_data_sha.py`）。
 - [ ] 選項與清單文字明顯大於一般網頁（≥ 16 px），深色主題，鍵盤 Tab 可走訪所有控制項且有明顯焦點框。
+
+## 結果頁 `/ui/results.html`（PDF p13–14）
+
+前置：專案已 `escount calibrate / prepare / train / select-rois`；想看到「已有完整分析結果」標記，先執行 `uv run escount infer --project <專案ID> --input Data/<專案ID>`（含 analysis.png，不要加 `--no-plots` 等關閉選項）。可用 `?case=<專案ID>` 直接開啟。
+
+- [ ] 離線（Network 設為 Offline）重新整理仍可操作；只載入 `/ui/` 與 `/ui/vendor/` 的檔案（Vue、ECharts 皆為本機檔）。
+- [ ] 「選擇資料夾」列出已校正專案，未訓練者標示「（未訓練）」且不可選；「模型」下拉有「專案客製化模型 (Project)」與「General 模型」（General 已訓練時）。
+- [ ] 影像清單：`outputs/infer/<專案>/<影像>/` 四個輸出皆存在的影像以「✱ N」標記（N = 已存的預測值），預設選第一張有完整結果的影像。
+- [ ] 上方顯示 `N_pred`、GT、命中／未命中、模型（專案或 general）、方法與耗時；與 `escount infer` 該影像的 `result.json` 的 `N_pred` 相同。
+- [ ] 預設顯示第一組 ROI（N1）；◀ ▶ 切換 N1…Nn，標題 `N{i}_pred = 值` 跟著換；換影像或換模型時回到 N1。
+- [ ] 三張圖（訊號＋高低點、MACD：DIF / DEA / 柱 + 黃金／死亡交叉、KD：RSV / K / D + 交叉）；滑鼠滾輪縮放、拖曳平移流暢，三張圖同步；最下方滑桿可選區間。
+- [ ] MACD 的 EMA1 / EMA2 / DEA 與 KD 的 RSV / K / D 預載模型訓練參數；在欄位輸入新值約 0.4 秒後自動重新預測，`N_pred`、圖形與「計數」即時更新，縮放區間保持不變。
+- [ ] 模型不使用某組參數時（例如 baseline 指標是 KD），提示「此模型的 N_pred 不使用 MACD 參數（僅更新圖表）」；ML 模型兩組參數都會影響 `N_pred`。
+- [ ] 「恢復模型訓練參數」回到預載值且 `N_pred` 回到原預測。
+- [ ] 下拉切換 General 模型後 `N_pred` 以 General 模型重算（標示 model_case = general 或 general_no_ring），參數重新預載。
+- [ ] 輸入 0 或空白參數時顯示錯誤訊息（422），修正後恢復。
+- [ ] `Data/` 內檔案不被修改（`uv run python scripts/check_data_sha.py`）。

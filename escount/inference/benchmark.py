@@ -73,7 +73,6 @@ class ProjectRuntime:
         """Timed pipeline keeping the intermediates (rotated image, kept items, feature rows)."""
         from escount.calibration.rotation_correction import rotate_image
         from escount.features.extract import roi_features
-        from escount.models.train import aggregate, feature_frame
         from escount.signals.roi_bank import stack_rows
 
         timings, start = {}, time.perf_counter()
@@ -91,18 +90,29 @@ class ProjectRuntime:
         lap("extent")
         rows = roi_features(rotated, kept, self.valid_x0, self.valid_width, self.grid.gaussian_sigma_ratio)
         lap("features")
-        if rows.empty:
-            per_roi = np.array([])
-        elif self.manifest["method"] == "ml":
-            delta = self.model.predict(feature_frame(rows, self.manifest["scale_normalised"]))
-            per_roi = rows["period_count"].to_numpy(dtype=np.float64) + delta
-        else:
-            per_roi = rows[self.manifest["baseline"]["column"]].to_numpy(dtype=np.float64)
+        per_roi = self.roi_predictions(rows)
         lap("model")
-        prediction = int(np.rint(aggregate(per_roi, self.manifest["aggregation"]))) if per_roi.size else None
+        prediction = self.image_prediction(per_roi)
         lap("aggregate")
         return {"prediction": prediction, "per_roi": per_roi, "timings": timings, "rotated": rotated,
                 "extent": extent, "kept": kept, "rows": rows}
+
+    def roi_predictions(self, rows):
+        """Per-ROI sheet counts of feature rows (ML: period_count + predicted delta; baseline: count column)."""
+        from escount.models.train import feature_frame
+
+        if rows.empty:
+            return np.array([])
+        if self.manifest["method"] == "ml":
+            delta = self.model.predict(feature_frame(rows, self.manifest["scale_normalised"]))
+            return rows["period_count"].to_numpy(dtype=np.float64) + delta
+        return rows[self.manifest["baseline"]["column"]].to_numpy(dtype=np.float64)
+
+    def image_prediction(self, per_roi):
+        """Rounded aggregate (median / trimmed mean) of the per-ROI predictions; None without ROIs."""
+        from escount.models.train import aggregate
+
+        return int(np.rint(aggregate(per_roi, self.manifest["aggregation"]))) if per_roi.size else None
 
 
 def benchmark(case, data_root="Data", profiles_root="outputs/projects", write=True):
