@@ -8,6 +8,10 @@
   escount benchmark --project <id>        -> single-thread CPU latency of the selected ROIs
   escount infer --project <id> --input <file|folder> [--model project|general] [--no-plots] ...
                                           -> per-image outputs + predictions.csv
+  escount research --trials N | --hours H [--cases ...] [--storage URL]
+                                          -> Optuna autoresearch, research/<case>/results.tsv, candidates/
+  escount report [--out outputs/research_report] -> presentation report (<timestamp>/ and latest/)
+  escount adopt <case>                    -> copy candidates/<case>/ into outputs/projects/<case>/research/
 The migrated V3 pipelines stay reachable unchanged:
   escount legacy-count  <args>   -> escount.es_counting (calibrate / analyze / run-all / predict)
   escount legacy-rotate <args>   -> escount.calibration.rotation_correction
@@ -177,6 +181,55 @@ def cmd_infer(args):
     return 0
 
 
+def cmd_research(args):
+    from escount.features.cache import case_ids
+    from escount.research.daemon import Researcher
+
+    if args.trials is not None and args.trials < 1 or args.hours is not None and args.hours <= 0:
+        raise SystemExit("escount research: --trials must be >= 1 and --hours > 0")
+    try:
+        researcher = Researcher(case_ids(args.data_root), args.cases, args.storage, args.research_root,
+                                args.candidates_root, args.data_root, args.profiles_root, args.config, args.device,
+                                args.workers)
+    except ValueError as error:
+        raise SystemExit(f"escount research: {error}") from error
+    start = time.perf_counter()
+    done = researcher.run(trials=args.trials, hours=args.hours)
+    print(f"research: {done} trials over {researcher.cases} in {time.perf_counter() - start:.1f} s; "
+          f"results {Path(args.research_root).resolve()}, candidates {Path(args.candidates_root).resolve()}")
+    return 0
+
+
+def cmd_report(args):
+    from escount.research.report import DEFAULT_CASES, build_report
+
+    build_report(args.out, args.cases or DEFAULT_CASES, args.research_root, args.candidates_root, args.storage,
+                 args.profiles_root, args.config)
+    return 0
+
+
+def cmd_adopt(args):
+    from escount.research.daemon import adopt
+
+    try:
+        target = adopt(args.case, args.candidates_root, args.profiles_root)
+    except FileNotFoundError as error:
+        raise SystemExit(f"escount adopt: {error}") from error
+    print(f"adopted candidates/{args.case} -> {target.resolve()}")
+    return 0
+
+
+DEFAULT_STORAGE = "sqlite:///research/study.db"   # = escount.research.daemon.DEFAULT_STORAGE (lazy import)
+
+
+def _research_paths(command):
+    command.add_argument("--storage", default=DEFAULT_STORAGE, help=f"Optuna storage (default: {DEFAULT_STORAGE})")
+    command.add_argument("--research-root", default="research", help="results.tsv root (default: research)")
+    command.add_argument("--candidates-root", default="candidates", help="candidate root (default: candidates)")
+    command.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")
+    command.add_argument("--config", default="configs/general.json", help="General config (exclude_from_general)")
+
+
 def _common(command, cache=True):
     command.add_argument("--data-root", default="Data", help="root folder of case ids (default: Data)")
     command.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")
@@ -256,6 +309,29 @@ def build_parser():
     infer.add_argument("--config", default="configs/general.json", help="General config (production General model)")
     infer.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")
     infer.set_defaults(func=cmd_infer)
+
+    research = sub.add_parser("research", help="Optuna TPE autoresearch over every case (resumable, SQLite)")
+    budget = research.add_mutually_exclusive_group(required=True)
+    budget.add_argument("--trials", type=int, help="new trials per case (round-robin)")
+    budget.add_argument("--hours", type=float, help="total wall-clock hours (round-robin)")
+    research.add_argument("--cases", nargs="+", help="case ids (default: every project + general + general_no_ring)")
+    research.add_argument("--data-root", default="Data", help="root folder of case ids (default: Data)")
+    research.add_argument("--device", choices=("cuda", "cpu"), default="cuda", help="XGBoost device (cuda falls back to cpu)")
+    research.add_argument("--workers", type=int, default=None, help="feature worker processes (default: os.cpu_count())")
+    _research_paths(research)
+    research.set_defaults(func=cmd_research)
+
+    report = sub.add_parser("report", help="presentation report -> outputs/research_report/<timestamp>/ + latest/")
+    report.add_argument("--out", default="outputs/research_report", help="report root (default: outputs/research_report)")
+    report.add_argument("--cases", nargs="+", help="case ids (default: the 4 projects + general + general_no_ring)")
+    _research_paths(report)
+    report.set_defaults(func=cmd_report)
+
+    adopt = sub.add_parser("adopt", help="copy candidates/<case>/ into the production profile (manual adoption)")
+    adopt.add_argument("case", help="case id (project, general or general_no_ring)")
+    adopt.add_argument("--candidates-root", default="candidates", help="candidate root (default: candidates)")
+    adopt.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")
+    adopt.set_defaults(func=cmd_adopt)
     return parser
 
 
