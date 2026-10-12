@@ -73,9 +73,13 @@ def stack_rows(image, slots, edge_tolerance=STACK_EDGE_TOLERANCE_PX):
     """
     layout = {"strips": [{"x": s.x, "y0": s.y0, "y1": s.y1, "width": s.w} for s in slots]}
     extent = stack_extent(image, layout)
-    y0, y1 = extent["y0"], extent["y1"]
-    if y1 - y0 < 2:
+    if extent["y1"] - extent["y0"] < 2:
         raise ValueError("stack extent is shorter than 2 rows")
-    kept = [replace(s, y0=max(s.y0, y0), y1=min(s.y1, y1)) for s in slots
+    return extent, clip_slots(slots, extent, edge_tolerance)
+
+
+def clip_slots(slots, extent, edge_tolerance=STACK_EDGE_TOLERANCE_PX):
+    """Clip slots to a stack extent; drop slots that do not span it (same rule as stack_rows)."""
+    y0, y1 = extent["y0"], extent["y1"]
+    return [replace(s, y0=max(s.y0, y0), y1=min(s.y1, y1)) for s in slots
             if s.y0 <= y0 + edge_tolerance and s.y1 >= y1 - edge_tolerance]
-    return extent, kept

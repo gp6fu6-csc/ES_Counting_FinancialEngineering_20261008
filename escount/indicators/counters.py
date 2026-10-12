@@ -73,17 +73,13 @@ def _peak_events(signal, config):
 def _bollinger_events(signal, config):
     percent_b = bollinger(signal, config.params).percent_b
     low, high = config.gate, 1.0 - config.gate
-    up, down, state = [], [], 0          # state: -1 last in low zone, +1 last in high zone, 0 unknown
-    for index, value in enumerate(percent_b):
-        if value > high:
-            if state == -1:
-                up.append(index)
-            state = 1
-        elif value < low:
-            if state == 1:
-                down.append(index)
-            state = -1
-    return np.array(up, dtype=np.int64), np.array(down, dtype=np.int64)
+    # hysteresis: +1 in the high zone, -1 in the low zone; an event is a switch between the zones
+    zone = np.where(percent_b > high, 1, np.where(percent_b < low, -1, 0))
+    index = np.flatnonzero(zone)
+    visited = zone[index]
+    switch = np.flatnonzero(visited[1:] != visited[:-1]) + 1
+    events, new_zone = index[switch].astype(np.int64), visited[switch]
+    return events[new_zone == 1], events[new_zone == -1]
 
 
 def count(signal, config):
