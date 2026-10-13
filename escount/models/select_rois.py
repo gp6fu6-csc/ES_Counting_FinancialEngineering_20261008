@@ -4,18 +4,23 @@ A unit is one (projection, w, position): for a project the exact strip x (`slot_
 the x_norm bin shared by all projects (`pos_key`, nearest strip per image). Per-row predictions are
 out-of-fold Grouped-LOO (LOIO) predictions of the case's adopted procedure, so every image is
 predicted by a model that never saw it. Step: add the unit that most improves the exact hit rate of
-round(median of the selected units' predictions) (ties: lower cost w, then key order); stop when the
-hit rate no longer improves. Units that overlap an already selected ROI by >= w/3 (narrower width;
-same strip under another projection included) or share its x_norm bin (General) are never added.
-The selection itself uses all images, so its hit rate is optimistic; `nested_loio` repeats the
-selection without each held-out image and scores that image (selection-inside-fold estimate).
+round(median of the selected units' predictions) (ties: lower cost w, then key order), up to
+`max_rois` units. Units that overlap an already selected ROI by >= w/3 (narrower width; same strip
+under another projection included) or share its x_norm bin (General) are never added.
+
+Subset size: in-sample hits (selection on all images) are optimistic, so the size k is chosen on
+the `nested_loio` curve (for each image the path is re-selected without it, its first k units score
+that image), most hits first, fewest ROIs on ties. `deployed` is the honest estimate of what
+inference runs: an outer LOIO of the whole procedure (path + size chosen on the inner curve). A
+baseline procedure's full ROI set (one bank, overlap < w/3) is deployed instead when its LOIO
+(group chosen inside each fold) has more exact hits. Latency is checked by `escount benchmark`.
 """
 import warnings
 
 import numpy as np
 import pandas as pd
 
-from escount.research.evaluate import evaluate, exact_hit
+from escount.research.evaluate import evaluate, exact_hit, wilson_interval
 
 MAX_ROIS = 25
 
@@ -80,53 +85,81 @@ def subset_hits(values, gt, units):
     return int(exact_hit(prediction, gt).sum())
 
 
+def medians_with(values, selected, candidates):
+    """nanmedian over the `selected` units plus each candidate unit, per image: (n_candidates, n_images).
+
+    Equal to np.nanmedian of the stacked columns, computed by inserting each candidate into the
+    sorted selected values (O(images x candidates x k) comparisons instead of a sort per candidate).
+    """
+    cand = values[:, candidates]
+    if not selected:
+        return cand.T.copy()
+    block = np.sort(values[:, selected], axis=1)                  # NaN sorted last
+    valid = np.sum(~np.isnan(block), axis=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        base = np.nanmedian(block, axis=1)                        # candidate NaN -> selected only
+    position = (block[:, None, :] < cand[:, :, None]).sum(axis=2)  # insertion index among valid values
+    size = np.broadcast_to((valid + 1)[:, None], position.shape)
+    last = block.shape[1] - 1
+
+    def merged(index):
+        gathered = np.take_along_axis(block, np.clip(index - (index > position), 0, last), axis=1)
+        return np.where(index == position, cand, gathered)
+
+    result = (merged((size - 1) // 2) + merged(size // 2)) / 2.0
+    return np.where(np.isnan(cand), base[:, None], result).T
+
+
 def greedy_select(values, gt, cost, max_rois=MAX_ROIS, geometry=None):
-    """Indices of the greedily selected units and the hits after each step. With `geometry`
-    (unit_geometry) a unit conflicting with an already selected one is never added."""
-    selected, history, best_hits = [], [], -1
+    """Greedy path: indices of up to `max_rois` units in selection order and the in-sample hits after
+    each step. With `geometry` (unit_geometry) a unit conflicting with a selected one is never added."""
+    selected, history = [], []
     remaining = np.arange(values.shape[1])
     while len(selected) < max_rois and remaining.size:
-        stacked = np.concatenate([np.repeat(values[:, selected][None], remaining.size, axis=0),
-                                  values.T[remaining][:, :, None]], axis=2)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            predictions = np.nanmedian(stacked, axis=2)
-        hits = exact_hit(predictions, gt[None, :]).sum(axis=1)
-        order = np.lexsort((remaining, cost[remaining], -hits))
-        choice = order[0]
-        if selected and hits[choice] <= best_hits:
-            break
-        best_hits = int(hits[choice])
+        hits = exact_hit(medians_with(values, selected, remaining), gt[None, :]).sum(axis=1)
+        choice = np.lexsort((remaining, cost[remaining], -hits))[0]
         selected.append(int(remaining[choice]))
-        history.append(best_hits)
+        history.append(int(hits[choice]))
         remaining = np.delete(remaining, choice)
         if geometry is not None:
             remaining = remaining[~conflicts_with(geometry, selected[-1], remaining)]
     return selected, history
 
 
-def nested_hits(values, gt, cost, max_rois=MAX_ROIS, geometry=None):
-    """Selection-inside-fold estimate: for each image, select on the other images, score it."""
+def nested_curve(values, gt, cost, max_rois=MAX_ROIS, geometry=None):
+    """curve[k-1] = exact hits when every image is scored with the first k units of the greedy path
+    selected without it (selection-inside-fold estimate per subset size)."""
+    curve = np.zeros(max_rois, dtype=int)
+    for index in range(len(gt)):
+        others = np.arange(len(gt)) != index
+        path, _ = greedy_select(values[others], gt[others], cost, max_rois, geometry)
+        for size in range(1, max_rois + 1):
+            curve[size - 1] += subset_hits(values[index:index + 1], gt[index:index + 1], path[:size])
+    return curve
+
+
+def choose_size(curve, path_length):
+    """Subset size with the most nested hits; ties -> fewest ROIs."""
+    return int(np.argmax(curve[:max(path_length, 1)])) + 1
+
+
+def honest_hits(values, gt, cost, max_rois=MAX_ROIS, geometry=None):
+    """Outer LOIO of the whole selection procedure (greedy path + size chosen on the nested curve of
+    the other images): exact hits of the held-out images."""
     hits = 0
     for index in range(len(gt)):
         others = np.arange(len(gt)) != index
-        selected, _ = greedy_select(values[others], gt[others], cost, max_rois, geometry)
-        hits += subset_hits(values[index:index + 1], gt[index:index + 1], selected)
+        path, _ = greedy_select(values[others], gt[others], cost, max_rois, geometry)
+        size = choose_size(nested_curve(values[others], gt[others], cost, max_rois, geometry), len(path))
+        hits += subset_hits(values[index:index + 1], gt[index:index + 1], path[:size])
     return hits
 
 
-def select_units(procedure, table, key_column="slot_key", max_rois=MAX_ROIS):
-    """Run LOIO with row predictions, then greedy selection. Returns a result dict."""
-    full = evaluate(procedure, table, "LOIO", keep_row_predictions=True)
-    values, keys, gt, cost, image_ids = unit_matrix(table, full.row_predictions, key_column)
-    geometry = unit_geometry(keys, key_column)
-    selected, history = greedy_select(values, gt, cost, max_rois, geometry)
-    nested = nested_hits(values, gt, cost, max_rois, geometry)
-    hits = history[-1]
-    chosen_keys = [keys[i] for i in selected]
-    representative = table[table[key_column].isin(chosen_keys)].drop_duplicates(key_column).set_index(key_column)
+def _roi_items(table, key_column, keys):
+    representative = table[table[key_column].isin(keys)].drop_duplicates(key_column).set_index(key_column)
     rois = []
-    for key in chosen_keys:
+    for key in keys:
         row = representative.loc[key]
         item = {"key": key, "projection": row["projection"], "w": int(row["w"]),
                 "sigma": None if pd.isna(row["sigma"]) else float(row["sigma"])}
@@ -135,15 +168,47 @@ def select_units(procedure, table, key_column="slot_key", max_rois=MAX_ROIS):
         else:
             item.update(x_norm_bin=float(key.rsplit("|", 1)[1]))
         rois.append(item)
+    return rois
+
+
+def select_units(procedure, table, key_column="slot_key", max_rois=MAX_ROIS):
+    """Run LOIO with row predictions, then greedy selection with the size chosen on the nested curve.
+    Returns a result dict; `deployed` is the honest exact-hit estimate of the ROIs inference uses."""
+    full = evaluate(procedure, table, "LOIO", keep_row_predictions=True)
+    values, keys, gt, cost, image_ids = unit_matrix(table, full.row_predictions, key_column)
+    geometry = unit_geometry(keys, key_column)
+    path, history = greedy_select(values, gt, cost, max_rois, geometry)
+    curve = nested_curve(values, gt, cost, max_rois, geometry)
+    size = choose_size(curve, len(path))
+    honest = honest_hits(values, gt, cost, max_rois, geometry)
+    chosen_keys, source = [keys[i] for i in path[:size]], "greedy_subset"
+    deployed_hits = honest
+    estimate = ("outer LOIO of the whole selection (greedy path + size chosen on the nested curve, both "
+                "without the held-out image)")
+    if key_column == "slot_key" and hasattr(procedure, "deployable_rows"):
+        procedure.fit(table)
+        bank = procedure.deployable_rows(table).sort_values("x")["slot_key"].unique().tolist()
+        if (-full.hits, len(bank)) < (-honest, size):
+            chosen_keys, source, deployed_hits = bank, "full_set", full.hits
+            estimate = "LOIO of the full ROI set (layout group and indicator chosen inside each fold)"
+    rois = _roi_items(table, key_column, chosen_keys)
+    total = len(gt)
+    low, high = wilson_interval(deployed_hits, total)
+    in_sample = history[size - 1] if source == "greedy_subset" else None
     return {"key_column": key_column, "selected_rois": rois, "roi_count": len(rois),
-            "hits": hits, "total": len(gt), "hit_rate": hits / len(gt), "history_hits": history,
+            "hits": in_sample, "total": total, "hit_rate": None if in_sample is None else in_sample / total,
+            "history_hits": history,
             "full_set": {"hits": full.hits, "total": full.total, "hit_rate": full.hit_rate,
                          "roi_count": full.roi_count},
-            "nested_loio": {"hits": nested, "total": len(gt), "hit_rate": nested / len(gt),
-                            "note": "subset re-selected without the held-out image, then that image is scored "
-                                    "(row predictions stay out-of-fold LOIO); quote this, not `hits`"},
+            "nested_loio": {"hits": int(curve[size - 1]), "total": total, "hit_rate": int(curve[size - 1]) / total,
+                            "size": size, "curve": curve[:max(len(path), 1)].tolist(),
+                            "note": "curve[k-1] = hits when each image uses the first k units of the path "
+                                    "re-selected without it; the subset size is chosen on this curve"},
+            "deployed": {"source": source, "roi_count": len(rois), "hits": deployed_hits, "total": total,
+                         "hit_rate": deployed_hits / total, "wilson95": [low, high], "estimate": estimate,
+                         "note": "honest exact-hit estimate of the ROIs inference uses; quote this"},
             "candidate_units": len(keys),
-            "note": "out-of-fold LOIO row predictions; the greedy subset is chosen on all images (optimistic)"}
+            "note": "out-of-fold LOIO row predictions; `hits` = in-sample hits of the greedy subset (optimistic)"}
 
 
 def _persist(model_dir, result):

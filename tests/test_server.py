@@ -1,7 +1,9 @@
+import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import cv2
 
@@ -134,8 +136,19 @@ class ServerTests(unittest.TestCase):
             check_bind("0.0.0.0", None)
         check_bind("127.0.0.1", None)
         check_bind("0.0.0.0", KEY)
-        with self.assertRaises(SystemExit):
-            cli_main(["serve", "--host", "0.0.0.0"])
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ESCOUNT_API_KEY", None)
+            with self.assertRaises(SystemExit):
+                cli_main(["serve", "--host", "0.0.0.0"])
+
+    def test_serve_takes_api_key_from_environment(self):
+        with mock.patch.dict(os.environ, {"ESCOUNT_API_KEY": KEY}), mock.patch("uvicorn.run") as run, \
+                mock.patch("escount.inference.benchmark.single_thread"):
+            self.assertEqual(cli_main(["serve", "--host", "0.0.0.0", "--profiles-root", str(self.profiles),
+                                       "--config", str(self.config)]), 0)
+        app = run.call_args.args[0]
+        self.assertEqual(Client(app).get("/projects").status_code, 401)
+        self.assertEqual(Client(app, {"X-API-Key": KEY}).get("/projects").status_code, 200)
 
     def test_openapi_documents_both_infer_modes(self):
         client = Client(self.app())

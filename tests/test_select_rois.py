@@ -1,5 +1,6 @@
 import time
 import unittest
+import warnings
 
 import cv2
 import numpy as np
@@ -9,7 +10,11 @@ from threadpoolctl import threadpool_limits
 from escount.calibration.calibrate import ProjectProfile
 from escount.features.extract import AugmentGrid, bank_items, extent_slots, feature_config, image_features
 from escount.inference.benchmark import ProjectRuntime
-from escount.models.select_rois import check_selected_overlap, greedy_select, select_units, unit_geometry
+from escount.inference.engine import GeneralRuntime
+from escount.signals.roi_bank import RoiSlot
+from escount.models.select_rois import (
+    check_selected_overlap, choose_size, greedy_select, medians_with, select_units, unit_geometry,
+)
 from escount.models.train import feature_frame, fit_model
 from escount.research.evaluate import evaluate
 from feature_tables import synthetic_table
@@ -26,6 +31,13 @@ class ColumnProcedure:
 
     def predict(self, test_rows):
         return self.predict_rows(test_rows).groupby(test_rows["image_id"]).median()
+
+
+class BankProcedure(ColumnProcedure):
+    """ColumnProcedure whose full ROI set is one deployable bank (the w=10 strips)."""
+
+    def deployable_rows(self, rows):
+        return rows[rows["w"] == 10]
 
 
 def selection_table():
@@ -62,6 +74,38 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(nested["total"], result["total"])
         self.assertLessEqual(nested["hits"], nested["total"])
         self.assertEqual(nested["hits"], nested["total"])        # the good x < 200 slots win in every fold
+        self.assertEqual(len(nested["curve"]), len(result["history_hits"]))
+        deployed = result["deployed"]
+        self.assertEqual((deployed["source"], deployed["roi_count"]), ("greedy_subset", result["roi_count"]))
+        self.assertGreaterEqual(deployed["hits"], result["full_set"]["hits"])   # honest subset >= full set
+
+    def test_size_by_nested_hits_fewest_on_ties(self):
+        self.assertEqual(choose_size(np.array([1, 3, 3, 2]), 4), 2)
+        self.assertEqual(choose_size(np.array([1, 3, 3, 2]), 1), 1)
+
+    def test_full_bank_deployed_when_it_has_more_honest_hits(self):
+        table = synthetic_table(images_per_case=6, rows_per_image=24, seed=5)
+        # every strip is off by one (+1 / -1 alternating along x); only the median of a whole bank is exact
+        table["signal"] = table["gt"] + np.where((table["x"] - 100) // 30 % 2 == 0, 1.0, -1.0)
+        result = select_units(BankProcedure(), table, "slot_key", max_rois=1)
+        self.assertEqual(result["deployed"]["source"], "full_set")
+        self.assertEqual(result["deployed"]["hits"], result["total"])
+        self.assertEqual([r["x"] for r in result["selected_rois"]], sorted(table.loc[table["w"] == 10, "x"].unique()))
+        check_selected_overlap(result["selected_rois"])
+        subset = select_units(ColumnProcedure(), table, "slot_key", max_rois=1)   # no deployable full set
+        self.assertEqual((subset["deployed"]["source"], subset["deployed"]["hits"]), ("greedy_subset", 0))
+
+    def test_fast_medians_equal_nanmedian(self):
+        rng = np.random.default_rng(1)
+        values = rng.integers(0, 6, (7, 9)).astype(float)
+        values[rng.random(values.shape) < 0.2] = np.nan
+        candidates = np.arange(9)
+        for selected in ([], [3], [3, 5], [0, 2, 4, 6]):
+            stacked = np.concatenate([np.repeat(values[:, selected][None], 9, axis=0), values.T[:, :, None]], axis=2)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                expected = np.nanmedian(stacked, axis=2)
+            np.testing.assert_array_equal(medians_with(values, selected, candidates), expected)
 
 
 class OverlapTests(unittest.TestCase):
@@ -70,7 +114,7 @@ class OverlapTests(unittest.TestCase):
         values = np.array([[10, 10, 10], [10, 10, 10], [10, 10, 10], [9, 11, 11]], dtype=float)
         cost = np.array([30.0, 30.0, 30.0])
         keys = ["mean|30|1490", "median|30|1490", "mean|30|1600"]   # unit 1 = same strip as unit 0
-        self.assertEqual(greedy_select(values, gt, cost)[0], [0, 1])
+        self.assertEqual(greedy_select(values, gt, cost)[0], [0, 1, 2])          # full path up to max_rois
         self.assertEqual(greedy_select(values, gt, cost, geometry=unit_geometry(keys, "slot_key"))[0], [0, 2])
         shifted = unit_geometry(["mean|30|1490", "mean|30|1505", "mean|30|1600"], "slot_key")   # 15 px >= 10 px
         self.assertEqual(greedy_select(values, gt, cost, geometry=shifted)[0], [0, 2])
@@ -86,6 +130,19 @@ class OverlapTests(unittest.TestCase):
                      [{"key": "a", "x_norm_bin": 0.8}, {"key": "b", "x_norm_bin": 0.8}]):
             with self.assertRaises(ValueError):
                 check_selected_overlap(rois)
+
+    def test_general_runtime_records_dropped_overlap(self):
+        runtime = GeneralRuntime.__new__(GeneralRuntime)            # only the unit -> strip resolution
+        runtime.valid_x0, runtime.valid_width = 0, 1000
+        first, second, third = (RoiSlot(x, 30, 0, 1000, 30, 0) for x in (500, 510, 700))
+        runtime.units = [({"key": "mean|30|0.50", "x_norm_bin": 0.50}, [(first, "mean")]),
+                         ({"key": "mean|30|0.55", "x_norm_bin": 0.55}, [(second, "mean")]),   # 20 px >= w/3
+                         ({"key": "mean|30|0.70", "x_norm_bin": 0.70}, [(third, "mean")])]
+        dropped = []
+        kept = runtime.kept_items({"y0": 0, "y1": 1000}, dropped)
+        self.assertEqual([slot.x for slot, _ in kept], [500, 700])
+        self.assertEqual([(d["unit"], d["strip"], d["overlaps"]) for d in dropped],
+                         [("mean|30|0.55", "mean|30|510", "mean|30|500")])
 
     def test_selection_never_overlaps(self):
         table = selection_table()

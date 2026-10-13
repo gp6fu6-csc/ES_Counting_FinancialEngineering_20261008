@@ -172,6 +172,10 @@ class BaselineProcedure:
     def predict_rows(self, test_rows):
         return test_rows[self.choice["column"]].astype(np.float64)
 
+    def deployable_rows(self, rows):
+        """Rows of the chosen layout group: the full ROI set `predict` uses (one bank, overlap < w/3)."""
+        return self._in_group(rows)
+
     def predict(self, test_rows):
         chosen = self._in_group(test_rows)
         result = chosen.groupby("image_id")[self.choice["column"]].median()

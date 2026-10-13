@@ -63,16 +63,22 @@ class GeneralRuntime(ProjectRuntime):
                          model, manifest)
         self.units = units
 
-    def kept_items(self, extent):
-        """Nearest strip of each unit's bin; a strip overlapping an earlier kept one by >= w/3 is dropped."""
+    def kept_items(self, extent, dropped=None):
+        """Nearest strip of each unit's bin; a strip overlapping an earlier kept one by >= w/3 is dropped
+        and recorded in `dropped` (result.json `dropped_rois`), since the model was evaluated with it."""
         kept = []
         for roi, candidates in self.units:
             clipped = clip_items(candidates, extent)
             if clipped:
                 slot, method = min(clipped, key=lambda item: abs(self._x_norm(item[0]) - roi["x_norm_bin"]))
-                if all(3 * (min(slot.x + slot.w, other.x + other.w) - max(slot.x, other.x)) < min(slot.w, other.w)
-                       for other, _ in kept):
+                clash = next((f"{m}|{other.w}|{other.x}" for other, m in kept
+                              if 3 * (min(slot.x + slot.w, other.x + other.w) - max(slot.x, other.x))
+                              >= min(slot.w, other.w)), None)
+                if clash is None:
                     kept.append((slot, method))
+                elif dropped is not None:
+                    dropped.append({"unit": roi["key"], "strip": f"{method}|{slot.w}|{slot.x}", "overlaps": clash,
+                                    "reason": "nearest strip overlaps a kept ROI by >= w/3; unit skipped"})
         return kept
 
     def _x_norm(self, slot):
@@ -268,7 +274,8 @@ class InferenceEngine:
                 "model": self.model_choice, "model_case": self.model_case,
                 "method": self.runtime.manifest["method"], "model_type": self.runtime.manifest["model_type"],
                 "N_pred": prediction, "gt": gt["count"] if gt else None,
-                "hit": (prediction == gt["count"]) if gt else None, "rois": rois, "timings_ms": timings,
+                "hit": (prediction == gt["count"]) if gt else None, "rois": rois,
+                "dropped_rois": run["dropped"], "timings_ms": timings,
                 "source_sha256_before": sha_before, "rotated": run["rotated"], "_gray": gray}
 
     def _signals(self, result):

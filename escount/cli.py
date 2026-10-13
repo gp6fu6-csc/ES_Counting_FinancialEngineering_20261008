@@ -13,13 +13,14 @@
   escount report [--out outputs/research_report] -> presentation report (<timestamp>/ and latest/)
   escount adopt <case>                    -> archive candidates/<case>/ in outputs/projects/<case>/research/
                                              (record only: inference keeps using train + select-rois model/)
-  escount serve [--host 127.0.0.1] [--port 8000] [--api-key K] [--root Data]
+  escount serve [--host 127.0.0.1] [--port 8000] [--api-key K | env ESCOUNT_API_KEY] [--root Data]
                                           -> FastAPI inference server (LabVIEW), OpenAPI at /docs
 The migrated V3 pipelines stay reachable unchanged:
   escount legacy-count  <args>   -> escount.es_counting (calibrate / analyze / run-all / predict)
   escount legacy-rotate <args>   -> escount.calibration.rotation_correction
 """
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -138,12 +139,12 @@ def cmd_train(args):
 
 
 def _print_selection(name, result):
-    nested = result["nested_loio"]
-    print(f"{name}: {result['roi_count']} ROIs, LOIO exact hits {result['hits']}/{result['total']} "
-          f"(subset chosen on all images, optimistic; selection-inside-fold estimate "
-          f"{nested['hits']}/{nested['total']}) "
-          f"(full set {result['full_set']['hits']}/{result['full_set']['total']} with "
-          f"{result['full_set']['roi_count']:g} ROIs/image); "
+    deployed, nested = result["deployed"], result["nested_loio"]
+    print(f"{name}: deployed {deployed['source']} {deployed['roi_count']} ROIs, honest exact hits "
+          f"{deployed['hits']}/{deployed['total']} ({deployed['estimate']}); "
+          f"greedy size {nested['size']} by nested curve {nested['curve']}; "
+          f"full set LOIO {result['full_set']['hits']}/{result['full_set']['total']} with "
+          f"{result['full_set']['roi_count']:g} ROIs/image; "
           f"{[r['key'] for r in result['selected_rois']]}")
 
 
@@ -251,8 +252,9 @@ def cmd_adopt(args):
 def cmd_serve(args):
     from escount.server.app import ServerConfig, check_bind, create_app
 
+    api_key = args.api_key or os.environ.get(API_KEY_ENV) or None   # env var keeps the key off the process list
     try:
-        check_bind(args.host, args.api_key)
+        check_bind(args.host, api_key)
     except ValueError as error:
         raise SystemExit(f"escount serve: {error}") from error
     import uvicorn
@@ -261,12 +263,13 @@ def cmd_serve(args):
 
     single_thread()                           # inference: single-process, single-thread CPU
     config = ServerConfig(profiles_root=args.profiles_root, allowed_roots=tuple(args.root or ["Data"]),
-                          api_key=args.api_key, general_config=args.config)
+                          api_key=api_key, general_config=args.config)
     uvicorn.run(create_app(config), host=args.host, port=args.port, log_level="info")
     return 0
 
 
 DEFAULT_STORAGE = "sqlite:///research/study.db"   # = escount.research.daemon.DEFAULT_STORAGE (lazy import)
+API_KEY_ENV = "ESCOUNT_API_KEY"
 
 
 def _research_paths(command):
@@ -389,7 +392,8 @@ def build_parser():
     serve = sub.add_parser("serve", help="FastAPI inference server + web UI (default 127.0.0.1:8000)")
     serve.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1; others need --api-key)")
     serve.add_argument("--port", type=int, default=8000, help="port (default 8000)")
-    serve.add_argument("--api-key", help="require this value in the X-API-Key header (all endpoints but /health)")
+    serve.add_argument("--api-key", help=f"require this value in the X-API-Key header (all endpoints but /health); "
+                                         f"default: ${API_KEY_ENV} (preferred: not visible in the process list)")
     serve.add_argument("--root", action="append", help="folder /infer/path may read from (repeatable; default Data)")
     serve.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")
     serve.add_argument("--config", default="configs/general.json", help="General config (production General model)")

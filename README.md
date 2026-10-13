@@ -81,6 +81,8 @@ httpx（certifi 為 MPL-2.0）未列為例外，測試改用 `tests/asgi_client.
 `escount research` / `escount report` 的命中率屬於研究程序（`candidates/<case>/best_params.json`）。
 正式推論（`escount infer`、Server、網頁）只使用 `escount train` + `escount select-rois` 產生的
 `outputs/projects/<case>/model/`；`escount adopt <case>` 只把候選設定複製到
-`outputs/projects/<case>/research/` 作為紀錄，推論不會讀取。`select-rois` 的命中數是在全部影像上挑選
-（偏樂觀），簡報請引用其 `nested_loio`（選擇在每個 fold 內重做）的數字。
+`outputs/projects/<case>/research/` 作為紀錄，推論不會讀取。`select-rois` 沿貪婪路徑（最多 `--max-rois`）
+以 nested 曲線（每張影像都用不含它的選擇結果評分）決定 ROI 數：命中數優先、同分取最少 ROI；baseline 模型的
+完整 ROI 組（單一 bank）誠實命中數較多時改部署完整組。簡報請引用 manifest `selection.deployed`
+（`escount report` 的「正式推論模型」表），部署後以 `escount benchmark` 確認 < 1 s。
 校正（CLI 或網頁）重新儲存後，舊模型會被拒絕載入，需重跑 `prepare` / `train` / `select-rois`。

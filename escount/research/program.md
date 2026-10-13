@@ -27,7 +27,8 @@ settings per case. These rules are fixed; a research run must not change them.
    `escount adopt <case>` copies the candidate to `outputs/projects/<case>/research/` as a record;
    inference does not read it and keeps using `model/manifest.json` from `escount train` +
    `escount select-rois`. Research hit rates describe the research procedure, not the deployed model
-   (its LOIO figures are in `model/manifest.json`).
+   (its honest exact-hit estimate is `selection.deployed` in `model/manifest.json`, shown in the
+   report's 「正式推論模型」 table).
 7. **ROI geometry.** Every strip row stays ≥ 50 px from the left/right edge of the background_BW valid
    region; adjacent strips overlap by less than w/3 (`D > 2w/3`, enforced by `AugmentGrid`); strips span
    the whole stack vertically.

@@ -86,8 +86,8 @@ class ProjectRuntime:
             items.append((slot, roi["projection"]))
         return cls(profile, items, extent_slots(mask, grid.side_margin), grid, model, manifest)
 
-    def kept_items(self, extent):
-        """Selected (slot, projection) items clipped to this image's stack extent."""
+    def kept_items(self, extent, dropped=None):
+        """Selected (slot, projection) items clipped to this image's stack extent (`dropped`: General only)."""
         from escount.features.extract import clip_items
 
         return clip_items(self.items, extent)
@@ -114,7 +114,8 @@ class ProjectRuntime:
         rotated = rotate_image(gray, self.profile.angle_deg)
         lap("rotate")
         extent, _ = stack_rows(rotated, self.ext_slots)
-        kept = self.kept_items(extent)
+        dropped = []
+        kept = self.kept_items(extent, dropped)
         lap("extent")
         rows = roi_features(rotated, kept, self.valid_x0, self.valid_width, self.grid.gaussian_sigma_ratio)
         lap("features")
@@ -123,7 +124,7 @@ class ProjectRuntime:
         prediction = self.image_prediction(per_roi)
         lap("aggregate")
         return {"prediction": prediction, "per_roi": per_roi, "timings": timings, "rotated": rotated,
-                "extent": extent, "kept": kept, "rows": rows}
+                "extent": extent, "kept": kept, "dropped": dropped, "rows": rows}
 
     def roi_predictions(self, rows):
         """Per-ROI sheet counts of feature rows (ML: period_count + predicted delta; baseline: count column)."""

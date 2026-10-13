@@ -10,14 +10,16 @@
 uv run escount serve
 
 # 開放給其他電腦（非 127.0.0.1 一律需要 API Key，否則拒絕啟動）
-uv run escount serve --host 0.0.0.0 --port 8000 --api-key <自訂金鑰> --root Data --root D:\Images
+$env:ESCOUNT_API_KEY = "<自訂金鑰>"   # 建議：用環境變數，金鑰不會出現在行程清單
+uv run escount serve --host 0.0.0.0 --port 8000 --root Data --root D:\Images
+# 或 uv run escount serve --host 0.0.0.0 --api-key <自訂金鑰> ...（金鑰會出現在行程命令列）
 ```
 
 | 參數 | 預設 | 說明 |
 |---|---|---|
-| `--host` | `127.0.0.1` | 綁定位址；非 loopback（如 `0.0.0.0`）必須同時給 `--api-key` |
+| `--host` | `127.0.0.1` | 綁定位址；非 loopback（如 `0.0.0.0`）必須同時給 API Key（`--api-key` 或 `ESCOUNT_API_KEY`） |
 | `--port` | `8000` | 連接埠 |
-| `--api-key` | 無 | 設定後，除 `/health`、`/docs`、`/openapi.json` 與 `/ui/` 靜態頁外，每個請求都要帶 `X-API-Key` 標頭，否則回 401 |
+| `--api-key` | 環境變數 `ESCOUNT_API_KEY` | 設定後，除 `/health`、`/docs`、`/openapi.json` 與 `/ui/` 靜態頁外，每個請求都要帶 `X-API-Key` 標頭，否則回 401 |
 | `--root` | `Data` | `/infer/path` 只允許讀取這些資料夾內的檔案（可重複指定） |
 | `--profiles-root` | `outputs/projects` | 專案設定檔（`project.json`、`model/`）所在處 |
 | `--config` | `configs/general.json` | General 模型設定（決定正式 General 模型） |

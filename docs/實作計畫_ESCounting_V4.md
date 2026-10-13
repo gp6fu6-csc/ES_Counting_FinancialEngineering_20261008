@@ -51,7 +51,7 @@ graph LR
 4. **指標庫**（像素為單位、純函數）：MA、EMA、MACD（DIF/DEA/柱）、KD（RSV/K/D）、布林通道（%b、頻寬）、`find_peaks`（prominence、距離）、自相關 / FFT 主週期。「焦點與 threshold」= 閘門與 prominence 門檻。
 5. **特徵**（每 ROI）：各指標計數、L/週期、正規化 x / w / L、SNR、std、週期穩定度。
 6. **模型**：目標 δ = GT − round(L/週期)；Ridge / SVR / XGBoost / LightGBM；ROI 預測取中位數或截尾平均後取整；ML 須在 Grouped LOO 完全命中率勝過最佳單一指標 baseline 才採用。
-7. **精簡 ROI**：「位置 × w × 投影」槽位貪婪前向選擇，至命中率不再提升；實測 CPU 延遲 < 1 秒。
+7. **精簡 ROI**：「位置 × w × 投影」槽位貪婪前向選擇；ROI 數依「選擇在 fold 內重做」的誠實命中率決定（命中率優先、同分取最少 ROI，不以 ROI 數換命中率），baseline 的完整 ROI 組較佳時保留完整組；實測 CPU 延遲 < 1 秒。
 8. **推論**：載入 profile → 旋轉 → 最少 ROI → 投影 → 指標 → 模型 → 輸出。每項輸出皆有開關（預設全開）、可調 dpi；`result.json` 記錄各階段耗時；SHA 確保原始資料未變。
 
 ### 輸出結構（依 PDF p7、p9–11）

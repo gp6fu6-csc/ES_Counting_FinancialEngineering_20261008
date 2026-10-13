@@ -147,6 +147,29 @@ class ReportTests(unittest.TestCase):
             latest = root / "report" / "latest"
             self.assertEqual(tree_hashes(latest), tree_hashes(out))
 
+    def test_report_shows_deployed_honest_hit_rate(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            model_dir = root / "profiles" / "P1" / "model"
+            model_dir.mkdir(parents=True)
+            deployed = {"source": "greedy_subset", "roi_count": 8, "hits": 13, "total": 14,
+                        "hit_rate": 13 / 14, "wilson95": [0.69, 0.99]}
+            (model_dir / "manifest.json").write_text(json.dumps(
+                {"method": "ml", "model_type": "lgbm", "selection": {"deployed": deployed}}), encoding="utf-8")
+            (root / "profiles" / "P1" / "benchmark.json").write_text(json.dumps(
+                {"roi_count": 8, "median_ms": 390.0, "max_ms": 412.5, "within_limit": True}), encoding="utf-8")
+            out = build_report(root / "report", ["P1", "P2"], root / "research", root / "candidates",
+                               f"sqlite:///{(root / 'study.db').as_posix()}", root / "profiles",
+                               root / "missing_general.json", log=lambda *_: None)
+            summary = (out / "summary.md").read_text(encoding="utf-8")
+            self.assertIn("## 正式推論模型", summary)
+            self.assertIn("| P1 | lgbm | 8 | 13/14 | 92.9% |", summary)
+            self.assertIn("412.5", summary)
+            self.assertIn("| P2 | — |", summary)                       # no model yet
+            report = (out / "report.html").read_text(encoding="utf-8")
+            self.assertIn("13/14", report)
+            self.assertIn("正式推論模型", report)
+
 
 class ExclusionTests(unittest.TestCase):
     def test_excluded_project_is_not_researched_or_reported(self):

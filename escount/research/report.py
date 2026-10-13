@@ -38,9 +38,10 @@ RING_FILE = "ring_inclusion.png"
 COMPARISON_FILES = ("project_vs_general.csv", "project_vs_general.png", "roi_count_vs_hit.png",
                     "param_importance_heatmap.png", "latency.png")
 ADOPTED_COLUMN = "已複製候選（推論未使用）"   # escount adopt only archives the candidate; inference uses model/
-SCOPE_NOTE = ("本報告的命中率屬於研究程序（candidates/）；正式推論模型由 escount train + select-rois 產生，"
-              "其 LOIO 命中率記錄於 outputs/projects/<case>/model/manifest.json。escount adopt 只把候選設定"
-              "複製到 outputs/projects/<case>/research/ 作為紀錄，推論不會讀取。")
+SCOPE_NOTE = ("「各案例最佳結果」的命中率屬於研究程序（candidates/）；正式推論模型由 escount train + select-rois "
+              "產生，其部署 ROI 的誠實命中率見「正式推論模型」表（來源 outputs/projects/<case>/model/manifest.json）。"
+              "escount adopt 只把候選設定複製到 outputs/projects/<case>/research/ 作為紀錄，推論不會讀取。")
+DEPLOYED_SOURCES = {"greedy_subset": "貪婪子集（大小依 nested 曲線）", "full_set": "完整 ROI 組（baseline）"}
 
 
 def default_cases(config):
@@ -408,6 +409,41 @@ def lopo_table(data):
     return pd.DataFrame(rows)
 
 
+def deployed_table(cases, profiles_root):
+    """Production model per case: the honest exact-hit estimate of the deployed ROIs (select-rois
+    `deployed`) and the end-to-end benchmark of the same ROI count."""
+    rows = []
+    for case in cases:
+        model_dir = Path(profiles_root) / case
+        manifest_path = model_dir / "model" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+        deployed = (manifest.get("selection") or {}).get("deployed")
+        if not deployed:
+            rows.append({"案例": case, "模型": "—", "部署 ROI": "—", "命中 hits/total": "—", "命中率": "—",
+                         "Wilson 95% CI": "—", "ROI 組": "尚無（先執行 escount train + select-rois）",
+                         "端到端最大延遲 ms": "—"})
+            continue
+        low, high = deployed["wilson95"]
+        latency = ("—（General：見 escount infer --model general 的 timings_ms）" if case in GENERAL_CASES
+                   else "—（無 benchmark.json）")
+        bench_path = model_dir / "benchmark.json"
+        if bench_path.is_file():
+            bench = json.loads(bench_path.read_text(encoding="utf-8"))
+            latency = (f"{bench['max_ms']:.1f}" + ("" if bench["within_limit"] else "（超過 1 s）")
+                       if bench.get("roi_count") == deployed["roi_count"] else "—（benchmark 過期，請重跑）")
+        model = manifest.get("model_type") if manifest.get("method") == "ml" else "baseline"
+        rows.append({"案例": case, "模型": model, "部署 ROI": deployed["roi_count"],
+                     "命中 hits/total": f"{deployed['hits']}/{deployed['total']}", "命中率": pct(deployed["hit_rate"]),
+                     "Wilson 95% CI": f"{pct(low)} – {pct(high)}",
+                     "ROI 組": DEPLOYED_SOURCES.get(deployed["source"], deployed["source"]),
+                     "端到端最大延遲 ms": latency})
+    return pd.DataFrame(rows)
+
+
+DEPLOYED_NOTE = ("命中數為誠實估計：貪婪子集 = 外層 LOIO 重做整個選擇（路徑 + 依 nested 曲線決定大小，皆不含被測影像）；"
+                 "完整 ROI 組 = 每個 fold 內選 baseline 版面與指標的 LOIO。延遲 = escount benchmark 單執行緒 CPU 最大值。")
+
+
 def excluded_decision(config):
     """Decision text when Ring-type is an excluded project (no with/without Ring comparison)."""
     reason = config.get("excluded_reason", {}).get(RING_CASE, "")
@@ -417,7 +453,9 @@ def excluded_decision(config):
     return {"available": False, "text": text}
 
 
-def write_summary(path, created, summary, comparison, lopo, decision, config, files=COMPARISON_FILES):
+def write_summary(path, created, summary, comparison, lopo, decision, config, files=COMPARISON_FILES,
+                  deployed=None):
+    deployed = pd.DataFrame() if deployed is None else deployed
     lines = ["# ESCounting V4 研究報告 (autoresearch)", "",
              f"產生時間：{created}", "",
              "- 唯一指標：exact hit rate，round(預測) == GT（無 MAE、無 ±1 容許）。",
@@ -426,6 +464,7 @@ def write_summary(path, created, summary, comparison, lopo, decision, config, fi
              "- 延遲欄位 = 評估器中「特徵 → 預測」每張影像毫秒（實測時間，僅作最後的同分排序，有計時抖動）；"
              "端到端延遲見 comparison/latency.png。",
              f"- {SCOPE_NOTE}", "",
+             "## 正式推論模型（部署 ROI 的誠實命中率）", "", DEPLOYED_NOTE, "", markdown_table(deployed),
              "## 各案例最佳結果", "", markdown_table(summary),
              "## General 的 LOPO（跨專案）", "", markdown_table(lopo),
              "## Ring-type 決策", "", decision["text"], "",
@@ -451,7 +490,9 @@ def _table(frame):
     return frame.to_html(index=False, escape=True, border=0, na_rep="")
 
 
-def write_html(path, out_dir, created, cases, summary, comparison, lopo, decision, files=COMPARISON_FILES):
+def write_html(path, out_dir, created, cases, summary, comparison, lopo, decision, files=COMPARISON_FILES,
+               deployed=None):
+    deployed = pd.DataFrame() if deployed is None else deployed
     style = ("body{font-family:'Microsoft JhengHei',sans-serif;margin:24px;background:#fafafa;color:#222}"
              "table{border-collapse:collapse;margin:8px 0 16px;font-size:14px}"
              "th,td{border:1px solid #ccc;padding:4px 8px;text-align:left}th{background:#e8eef6}"
@@ -463,6 +504,8 @@ def write_html(path, out_dir, created, cases, summary, comparison, lopo, decisio
              "<p>唯一指標 exact hit rate (round(預測) == GT)；排序 (-hit_rate, roi_count, latency_ms)；"
              "LOIO（General 另記 LOPO）；ROI 每列距有效區域邊界 ≥ 50 px、D &gt; 2w/3、垂直方向不平滑。</p>",
              f"<p>{html.escape(SCOPE_NOTE)}</p>",
+             "<section><h2>正式推論模型（部署 ROI 的誠實命中率）</h2>", f"<p>{html.escape(DEPLOYED_NOTE)}</p>",
+             _table(deployed), "</section>",
              "<section><h2>各案例最佳結果</h2>", _table(summary), "<h2>General 的 LOPO（跨專案）</h2>", _table(lopo),
              f"<h2>Ring-type 決策</h2><p>{html.escape(decision['text'])}</p></section>",
              "<section><h2>比較 (comparison)</h2>", _table(comparison.round(4))]
@@ -547,9 +590,10 @@ def build_report(out_root="outputs/research_report", cases=None, research_root="
     plot_latency(comparison_dir / "latency.png", data, profiles_root)
     summary = pd.DataFrame([case_summary(case, data[case]) for case in cases])
     lopo = lopo_table(data)
+    deployed = deployed_table(cases, profiles_root)
     stamp = created.isoformat(timespec="seconds")
-    write_summary(out_dir / "summary.md", stamp, summary, comparison, lopo, decision, config, files)
-    write_html(out_dir / "report.html", out_dir, stamp, cases, summary, comparison, lopo, decision, files)
+    write_summary(out_dir / "summary.md", stamp, summary, comparison, lopo, decision, config, files, deployed)
+    write_html(out_dir / "report.html", out_dir, stamp, cases, summary, comparison, lopo, decision, files, deployed)
     latest = Path(out_root) / "latest"
     if latest.exists():
         shutil.rmtree(latest)
