@@ -47,6 +47,9 @@ Vue.createApp({
     for (const key of ["signal", "macd", "kd"]) charts[key] = echarts.init(this.$refs[key], "dark");
     echarts.connect([charts.signal, charts.macd, charts.kd]);   // zoom / pan / tooltip in sync
     window.addEventListener("resize", () => Object.values(charts).forEach((c) => c.resize()));
+    // charts are created before the layout settles; re-measure whenever a container changes size
+    const observer = new ResizeObserver(() => Object.values(charts).forEach((c) => c.resize()));
+    for (const key of ["signal", "macd", "kd"]) observer.observe(this.$refs[key]);
     try {
       this.projects = (await ESC.api("/projects")).projects;
       const wanted = new URLSearchParams(location.search).get("case");      // deep link: ?case=<id>
@@ -130,6 +133,7 @@ Vue.createApp({
           option.dataZoom = option.dataZoom.map((z) => ({ ...z, start: previous[0].start, end: previous[0].end }));
         }
         charts[key].setOption(option, { notMerge: true });
+        charts[key].resize();                                     // fit the current container width
       }
     },
   },
