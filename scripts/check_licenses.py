@@ -2,6 +2,7 @@
 
 Allowed: MIT (incl. MIT-CMU), BSD, Apache-2.0, PSF, ISC, LGPL (dynamic linking only).
 Rejected: GPL, AGPL, SSPL, commercial / proprietary / non-commercial terms, unknown licences.
+Explicit exceptions (ACCEPTED_EXCEPTIONS, documented in README.md): tqdm (MPL-2.0 AND MIT).
 
 Usage (repo root):  uv run python scripts/check_licenses.py
 Checks every package installed in the current environment (pip-licenses, --from=mixed) except
@@ -25,18 +26,34 @@ FORBIDDEN = re.compile(
     r"Commercial|Proprietary|Business Source|\bBUSL|Elastic License|Commons Clause|\bCC-BY-NC|UNKNOWN",
     re.IGNORECASE)
 NON_COMMERCIAL = re.compile(r"Non-?Commercial", re.IGNORECASE)
+# Packages outside the allow-list that are accepted explicitly (listed in README.md, licence table).
+ACCEPTED_EXCEPTIONS = {
+    "tqdm": ("MPL-2.0 AND MIT", "required by optuna; used unmodified. MPL-2.0 is file-level copyleft only "
+                                "(no fees, no usage limits)"),
+}
 
 
 def classify(license_text):
-    """Return (ok, reason) for a pip-licenses licence string."""
+    """Return (ok, reason) for a pip-licenses licence string. In an SPDX 'A AND B' expression every
+    part must pass; in 'A OR B' one passing part is enough."""
     text = (license_text or "").strip()
     if not text:
         return False, "empty licence metadata"
     if FORBIDDEN.search(text) or NON_COMMERCIAL.search(text):
         return False, "forbidden or unknown licence"
-    if ALLOWED.search(text):
+    parts = [part.strip(" ()") for part in re.split(r"\s+AND\s+", text)]
+    if all(ALLOWED.search(part) for part in parts):
         return True, "permissive"
     return False, "licence not in the allow-list"
+
+
+def check_package(name, license_text):
+    """classify(), then the explicit ACCEPTED_EXCEPTIONS (only for the exact licence string recorded)."""
+    ok, reason = classify(license_text)
+    exception = ACCEPTED_EXCEPTIONS.get(name.lower())
+    if not ok and exception and (license_text or "").strip() == exception[0]:
+        return True, f"accepted exception: {exception[1]}"
+    return ok, reason
 
 
 def installed_licenses():
@@ -61,7 +78,7 @@ def main():
     failures = []
     for item in sorted(packages, key=lambda p: p["Name"].lower()):
         name, version, text = item["Name"], item["Version"], item["License"]
-        ok, reason = classify(text)
+        ok, reason = check_package(name, text)
         print(f"{'OK  ' if ok else 'FAIL'} {name}=={version}: {text} ({reason})")
         if not ok:
             failures.append(name)

@@ -13,6 +13,27 @@ import numpy as np
 
 THREAD_ENV = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS")
 LATENCY_LIMIT_MS = 1000.0
+RETRAIN = "re-run `escount prepare / train / select-rois` for {case}"
+
+
+def check_profile_fingerprint(manifest, case, profile, rotated_mask_path, required=True):
+    """ValueError unless the model was trained on the current calibration of `case`.
+
+    The model manifest stores the feature cache's profile fingerprint (angle, valid region, mask
+    SHAs) per training project; a calibration saved later (CLI or web UI) changes it. A project the
+    model was not trained on is skipped when `required` is False (General on another project).
+    """
+    from escount.features.cache import profile_fingerprint
+
+    recorded = (manifest.get("profile_fingerprints") or {}).get(case)
+    if recorded is None:
+        if required:
+            raise ValueError(f"{case}: the model manifest records no calibration fingerprint (trained before "
+                             f"fingerprints were stored); {RETRAIN.format(case=case)}")
+        return
+    if recorded != profile_fingerprint(profile, rotated_mask_path):
+        raise ValueError(f"{case}: the calibration (project.json / background_BW_rotated.png) changed after the "
+                         f"model was trained; {RETRAIN.format(case=case)}")
 
 
 def single_thread():
@@ -42,12 +63,16 @@ class ProjectRuntime:
         from escount.models.store import load_model
         from escount.signals.roi_bank import build_roi_bank
 
+        from escount.models.select_rois import check_selected_overlap
+
         case_dir = Path(profiles_root) / case
         profile = ProjectProfile.load(case_dir / PROFILE_NAME)
         mask = read_gray(case_dir / ROTATED_MASK_NAME)
         model, manifest = load_model(case_dir / "model", single_thread=single_thread)
+        check_profile_fingerprint(manifest, case, profile, case_dir / ROTATED_MASK_NAME)
         if not manifest.get("selected_rois"):
             raise ValueError(f"{case}: no selected_rois in the model manifest; run `escount select-rois --project {case}`")
+        check_selected_overlap(manifest["selected_rois"])
         grid = AugmentGrid.from_dict(manifest["feature_config"]["grid"])
         if config_hash(manifest["feature_config"]) != config_hash(feature_config(grid)):
             raise ValueError(f"{case}: model was trained with a different feature config; re-run prepare/train")
@@ -55,7 +80,10 @@ class ProjectRuntime:
         for roi in manifest["selected_rois"]:
             bank = build_roi_bank(mask, (roi["w"],), pitch=roi["pitch"], side_margin=grid.side_margin,
                                   x_offset=roi["x_offset"])
-            items.append((next(slot for slot in bank if slot.x == roi["x"]), roi["projection"]))
+            slot = next((slot for slot in bank if slot.x == roi["x"]), None)
+            if slot is None:
+                raise ValueError(f"{case}: selected ROI {roi['key']} does not fit the current mask; {RETRAIN.format(case=case)}")
+            items.append((slot, roi["projection"]))
         return cls(profile, items, extent_slots(mask, grid.side_margin), grid, model, manifest)
 
     def kept_items(self, extent):

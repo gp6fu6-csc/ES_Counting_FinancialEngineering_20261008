@@ -12,8 +12,9 @@ that geometry (escount.features.cache.prepare in research/features/<grid hash>/,
 the FIXED evaluator escount.research.evaluate (LOIO; LOPO is recorded for the General cases) with
 a fixed compute budget -> one row in research/<case>/results.tsv. status = keep iff rank_key
 (-hit_rate, roi_count, latency_ms) beats the current candidate; on keep the complete, reusable
-configuration is written to candidates/<case>/best_params.json (+ per_image.csv). Production
-(outputs/projects/<case>/) is only touched by `escount adopt <case>`.
+configuration is written to candidates/<case>/best_params.json (+ per_image.csv). Research never
+writes to outputs/projects/<case>/; `escount adopt <case>` only archives the candidate in its
+research/ folder (inference keeps using model/ from train + select-rois).
 """
 import csv
 import json
@@ -450,7 +451,10 @@ def _json_default(value):
 
 # ---------------------------------------------------------------- adopt
 def adopt(case, candidates_root="candidates", profiles_root="outputs/projects"):
-    """Copy candidates/<case>/ (best_params.json, per_image.csv) into outputs/projects/<case>/research/."""
+    """Copy candidates/<case>/ (best_params.json, per_image.csv) into outputs/projects/<case>/research/.
+
+    A record only: InferenceEngine / the server read model/manifest.json, never research/.
+    """
     source = Path(candidates_root) / case
     if not (source / BEST_NAME).is_file():
         raise FileNotFoundError(f"{source / BEST_NAME} missing; run `escount research` first")

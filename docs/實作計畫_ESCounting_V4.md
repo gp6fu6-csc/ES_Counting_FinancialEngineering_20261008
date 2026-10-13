@@ -19,7 +19,7 @@
 | 投影 | 僅寬度方向（平均 / 高斯加權 / 中位數），**垂直方向不平滑** |
 | 推論效能 | 最少 ROI，CPU 單張 < 1 秒（不含模型載入） |
 | Server | FastAPI；預設 127.0.0.1；開放 0.0.0.0 時強制 `X-API-Key`；`/infer/path` 限制根目錄 |
-| 研究 | autoresearch 方法：固定評估器、單一指標、固定預算、`results.tsv` keep/discard；Optuna + SQLite 可中斷續跑；成果進 `candidates/`，人工 adopt |
+| 研究 | autoresearch 方法：固定評估器、單一指標、固定預算、`results.tsv` keep/discard；Optuna + SQLite 可中斷續跑；成果進 `candidates/`，人工 adopt（目前僅複製候選設定至 profile 的 `research/` 作紀錄；正式推論模型仍由 train + select-rois 產生） |
 | 硬體 | RTX 3090、64 GB RAM、Xeon W-2223；訓練/研究全本機離線（XGBoost CUDA，自動退回 CPU） |
 | General | 幾何各專案獨立；計片模型合併訓練、尺度正規化特徵；LOIO + LOPO；比較含/不含 Ring-type，效果不彰則排除 |
 | 結構 | `escount/` 套件；CLI `escount <cmd>`；既有測試遷移後全通過 |

@@ -64,11 +64,15 @@ class GeneralRuntime(ProjectRuntime):
         self.units = units
 
     def kept_items(self, extent):
+        """Nearest strip of each unit's bin; a strip overlapping an earlier kept one by >= w/3 is dropped."""
         kept = []
         for roi, candidates in self.units:
             clipped = clip_items(candidates, extent)
             if clipped:
-                kept.append(min(clipped, key=lambda item: abs(self._x_norm(item[0]) - roi["x_norm_bin"])))
+                slot, method = min(clipped, key=lambda item: abs(self._x_norm(item[0]) - roi["x_norm_bin"]))
+                if all(3 * (min(slot.x + slot.w, other.x + other.w) - max(slot.x, other.x)) < min(slot.w, other.w)
+                       for other, _ in kept):
+                    kept.append((slot, method))
         return kept
 
     def _x_norm(self, slot):
@@ -87,13 +91,19 @@ def _profile_dir(case_or_profile_dir, profiles_root):
 
 
 def _general_runtime(profile_dir, model_dir, single_thread):
+    from escount.inference.benchmark import check_profile_fingerprint
+    from escount.models.select_rois import check_selected_overlap
     from escount.models.store import load_model
 
     profile = ProjectProfile.load(profile_dir / PROFILE_NAME)
     mask = read_gray(profile_dir / ROTATED_MASK_NAME)
     model, manifest = load_model(model_dir, single_thread=single_thread)
+    case = profile_dir.name
+    check_profile_fingerprint(manifest, case, profile, profile_dir / ROTATED_MASK_NAME,
+                              required=case in manifest.get("cases", ()))
     if not manifest.get("selected_rois"):
         raise ValueError(f"{model_dir}: no selected_rois; run `escount select-rois --general`")
+    check_selected_overlap(manifest["selected_rois"])
     grid = AugmentGrid.from_dict(manifest["feature_config"]["grid"])
     if config_hash(manifest["feature_config"]) != config_hash(feature_config(grid)):
         raise ValueError(f"{model_dir}: model was trained with a different feature config; re-run prepare/train")

@@ -226,8 +226,12 @@ def _summary(result):
 
 def train_case(case, table, out_dir, device="cuda", scale_normalised=False, schemes=("LOIO",),
                model_types=MODEL_TYPES, max_rows_per_image=MAX_ROWS_PER_IMAGE, aggregation="median",
-               feature_config=None, log=print):
-    """Evaluate baseline + every model type (LOIO, optionally LOPO), fit the final model, write model/."""
+               feature_config=None, profile_fingerprints=None, log=print):
+    """Evaluate baseline + every model type (LOIO, optionally LOPO), fit the final model, write model/.
+
+    profile_fingerprints = {project: profile_sha256 of its feature cache}; inference refuses to load
+    the model once a project's calibration (project.json / rotated mask) no longer matches.
+    """
     from escount.models.store import save_model
 
     results, devices, per_image = {}, {}, []
@@ -264,7 +268,7 @@ def train_case(case, table, out_dir, device="cuda", scale_normalised=False, sche
         device=final.device_used, devices_loio=devices, trained_rows=final.trained_rows,
         cases=sorted(table["case"].unique()), images=int(table["image_id"].nunique()),
         baseline=baseline.choice, baseline_roi_count=baseline.roi_count, evaluation=evaluation,
-        feature_config=feature_config)
+        feature_config=feature_config, profile_fingerprints=profile_fingerprints or {})
     pd.concat(per_image, ignore_index=True).to_csv(out_dir / "evaluation_per_image.csv", index=False,
                                                     encoding="utf-8")
     log(f"[{case}] best ML {best_kind} -> method={method} (device {final.device_used}); wrote {out_dir.resolve()}")
@@ -276,9 +280,10 @@ def train_project(case, cache_root="outputs/features", profiles_root="outputs/pr
     from escount.features.cache import load_features, load_manifest
 
     table = load_features(case, cache_root)
+    cache = load_manifest(case, cache_root)
     return train_case(case, table, Path(profiles_root) / case / "model", device=device,
-                      max_rows_per_image=max_rows_per_image, feature_config=load_manifest(case, cache_root)["feature_config"],
-                      log=log)
+                      max_rows_per_image=max_rows_per_image, feature_config=cache["feature_config"],
+                      profile_fingerprints={case: cache["profile_sha256"]}, log=log)
 
 
 # ---------------------------------------------------------------- General
@@ -366,7 +371,9 @@ def train_general(cache_root="outputs/features", profiles_root="outputs/projects
         manifests[name] = train_case(name, table, Path(profiles_root) / name / "model", device=device,
                                      scale_normalised=True, schemes=("LOIO", "LOPO"),
                                      max_rows_per_image=max_rows_per_image,
-                                     feature_config=load_manifest(kept[0], cache_root)["feature_config"], log=log)
+                                     feature_config=load_manifest(kept[0], cache_root)["feature_config"],
+                                     profile_fingerprints={case: load_manifest(case, cache_root)["profile_sha256"]
+                                                           for case in kept}, log=log)
     if "general_no_ring" in manifests:
         comparison = ring_comparison(manifests)
         log(f"[general] ring_hurts_others={comparison['ring_hurts_others']} "

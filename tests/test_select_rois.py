@@ -9,7 +9,7 @@ from threadpoolctl import threadpool_limits
 from escount.calibration.calibrate import ProjectProfile
 from escount.features.extract import AugmentGrid, bank_items, extent_slots, feature_config, image_features
 from escount.inference.benchmark import ProjectRuntime
-from escount.models.select_rois import select_units
+from escount.models.select_rois import check_selected_overlap, greedy_select, select_units, unit_geometry
 from escount.models.train import feature_frame, fit_model
 from escount.research.evaluate import evaluate
 from feature_tables import synthetic_table
@@ -55,6 +55,45 @@ class SelectionTests(unittest.TestCase):
         result = select_units(ColumnProcedure(), table, "pos_key")
         self.assertEqual(result["hits"], result["total"])
         self.assertIn("x_norm_bin", result["selected_rois"][0])
+
+    def test_nested_estimate_is_reported(self):
+        result = select_units(ColumnProcedure(), selection_table(), "slot_key")
+        nested = result["nested_loio"]
+        self.assertEqual(nested["total"], result["total"])
+        self.assertLessEqual(nested["hits"], nested["total"])
+        self.assertEqual(nested["hits"], nested["total"])        # the good x < 200 slots win in every fold
+
+
+class OverlapTests(unittest.TestCase):
+    def test_greedy_skips_units_overlapping_by_a_third(self):
+        gt = np.array([10, 10, 10, 10])
+        values = np.array([[10, 10, 10], [10, 10, 10], [10, 10, 10], [9, 11, 11]], dtype=float)
+        cost = np.array([30.0, 30.0, 30.0])
+        keys = ["mean|30|1490", "median|30|1490", "mean|30|1600"]   # unit 1 = same strip as unit 0
+        self.assertEqual(greedy_select(values, gt, cost)[0], [0, 1])
+        self.assertEqual(greedy_select(values, gt, cost, geometry=unit_geometry(keys, "slot_key"))[0], [0, 2])
+        shifted = unit_geometry(["mean|30|1490", "mean|30|1505", "mean|30|1600"], "slot_key")   # 15 px >= 10 px
+        self.assertEqual(greedy_select(values, gt, cost, geometry=shifted)[0], [0, 2])
+        bins = unit_geometry(["mean|30|0.80", "median|20|0.80", "mean|30|0.30"], "pos_key")
+        self.assertEqual(greedy_select(values, gt, cost, geometry=bins)[0], [0, 2])
+
+    def test_selected_rois_overlap_check(self):
+        check_selected_overlap([{"key": "a", "x": 100, "w": 30}, {"key": "b", "x": 121, "w": 30}])   # 9 < 10 px
+        check_selected_overlap([{"key": "a", "x_norm_bin": 0.8}, {"key": "b", "x_norm_bin": 0.3}])
+        for rois in ([{"key": "a", "x": 100, "w": 30}, {"key": "b", "x": 120, "w": 30}],          # 10 px = w/3
+                     [{"key": "a", "x": 100, "w": 30}, {"key": "b", "x": 100, "w": 30}],
+                     [{"key": "a", "x": 100, "w": 12}, {"key": "b", "x": 104, "w": 40}],
+                     [{"key": "a", "x_norm_bin": 0.8}, {"key": "b", "x_norm_bin": 0.8}]):
+            with self.assertRaises(ValueError):
+                check_selected_overlap(rois)
+
+    def test_selection_never_overlaps(self):
+        table = selection_table()
+        shifted = table.copy()
+        shifted["x"] = shifted["x"] + 15                         # second grid 15 px to the right
+        shifted["slot_key"] = shifted["projection"] + "|" + shifted["w"].astype(str) + "|" + shifted["x"].astype(str)
+        result = select_units(ColumnProcedure(), pd.concat([table, shifted], ignore_index=True), "slot_key", 25)
+        check_selected_overlap(result["selected_rois"])
 
 
 def stack_image(height=2048, width=2448, sheets=150, period=11, top=250, seed=0):

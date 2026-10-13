@@ -37,6 +37,10 @@ CASE_FILES = ("best_params.json", "results.tsv", "progress.png", "param_importan
 RING_FILE = "ring_inclusion.png"
 COMPARISON_FILES = ("project_vs_general.csv", "project_vs_general.png", "roi_count_vs_hit.png",
                     "param_importance_heatmap.png", "latency.png")
+ADOPTED_COLUMN = "已複製候選（推論未使用）"   # escount adopt only archives the candidate; inference uses model/
+SCOPE_NOTE = ("本報告的命中率屬於研究程序（candidates/）；正式推論模型由 escount train + select-rois 產生，"
+              "其 LOIO 命中率記錄於 outputs/projects/<case>/model/manifest.json。escount adopt 只把候選設定"
+              "複製到 outputs/projects/<case>/research/ 作為紀錄，推論不會讀取。")
 
 
 def default_cases(config):
@@ -373,13 +377,13 @@ def case_summary(case, item):
     trials = int(item["tsv"]["hit_rate"].notna().sum())
     if not best:
         return {"案例": case, "最佳 trial": "—", "命中 hits/total": "—", "命中率": "—", "Wilson 95% CI": "—",
-                "ROI 數": "—", "延遲 ms/影像": "—", "trials": trials, "已採用": "否", "config_hash": "—"}
+                "ROI 數": "—", "延遲 ms/影像": "—", "trials": trials, ADOPTED_COLUMN: "否", "config_hash": "—"}
     result = best["result"]
     low, high = result["wilson95"]
     return {"案例": case, "最佳 trial": best["trial"], "命中 hits/total": f"{result['hits']}/{result['total']}",
             "命中率": pct(result["hit_rate"]), "Wilson 95% CI": f"{pct(low)} – {pct(high)}",
             "ROI 數": f"{result['roi_count']:g}", "延遲 ms/影像": f"{result['latency_ms']:.3f}", "trials": trials,
-            "已採用": "是" if item["adopted"] else "否", "config_hash": best["config_hash"]}
+            ADOPTED_COLUMN: "是" if item["adopted"] else "否", "config_hash": best["config_hash"]}
 
 
 def markdown_table(frame):
@@ -419,7 +423,9 @@ def write_summary(path, created, summary, comparison, lopo, decision, config, fi
              "- 唯一指標：exact hit rate，round(預測) == GT（無 MAE、無 ±1 容許）。",
              "- 排序：(-hit_rate, roi_count, latency_ms)；驗證：LOIO（General 另記 LOPO），評估器固定不改。",
              "- ROI 規則：每列距 background_BW 有效區域左右邊界 ≥ 50 px；D > 2w/3（重疊 < w/3）；垂直方向不平滑。",
-             "- 延遲欄位 = 評估器中「特徵 → 預測」每張影像毫秒；端到端延遲見 comparison/latency.png。", "",
+             "- 延遲欄位 = 評估器中「特徵 → 預測」每張影像毫秒（實測時間，僅作最後的同分排序，有計時抖動）；"
+             "端到端延遲見 comparison/latency.png。",
+             f"- {SCOPE_NOTE}", "",
              "## 各案例最佳結果", "", markdown_table(summary),
              "## General 的 LOPO（跨專案）", "", markdown_table(lopo),
              "## Ring-type 決策", "", decision["text"], "",
@@ -456,6 +462,7 @@ def write_html(path, out_dir, created, cases, summary, comparison, lopo, decisio
              "<h1>ESCounting V4 研究報告 (autoresearch)</h1>", f"<p>產生時間：{html.escape(created)}</p>",
              "<p>唯一指標 exact hit rate (round(預測) == GT)；排序 (-hit_rate, roi_count, latency_ms)；"
              "LOIO（General 另記 LOPO）；ROI 每列距有效區域邊界 ≥ 50 px、D &gt; 2w/3、垂直方向不平滑。</p>",
+             f"<p>{html.escape(SCOPE_NOTE)}</p>",
              "<section><h2>各案例最佳結果</h2>", _table(summary), "<h2>General 的 LOPO（跨專案）</h2>", _table(lopo),
              f"<h2>Ring-type 決策</h2><p>{html.escape(decision['text'])}</p></section>",
              "<section><h2>比較 (comparison)</h2>", _table(comparison.round(4))]

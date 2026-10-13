@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 
 from asgi_client import Client
+from escount.calibration.calibrate import ProjectProfile
 from escount.cli import main as cli_main
 from escount.es_counting import tree_signatures
 from escount.inference.engine import InferenceEngine
@@ -98,6 +99,35 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(client.post("/infer/path", json={"path": str(self.config)}).status_code, 403)
         self.assertEqual(client.post("/infer/path", json={"path": "076.png"}).status_code, 403)   # relative to cwd
         self.assertEqual(client.post("/infer/path", json={"path": str(self.data / "SynA" / "999.png")}).status_code, 404)
+        for unc in (r"\\203.0.113.7\share\076.png", "//203.0.113.7/share/076.png", r"\\?\UNC\203.0.113.7\s\076.png"):
+            self.assertEqual(client.post("/infer/path", json={"path": unc}).status_code, 403, unc)
+
+    def test_keyless_server_rejects_foreign_host_headers(self):
+        client = Client(self.app())
+        for host in ("127.0.0.1:8000", "localhost:8000", "localhost", "[::1]:8000"):
+            self.assertEqual(client.get("/health", headers={"host": host}).status_code, 200, host)
+        for host in ("evil.example", "evil.example:8000", "127.0.0.1.evil.example:8000", ""):
+            self.assertEqual(client.get("/projects", headers={"host": host}).status_code, 400, host)
+            self.assertEqual(client.post("/calibration/SynA/save", json={"rois": [{"x": 0, "y": 0, "side": 300}]},
+                                         headers={"host": host}).status_code, 400, host)
+        keyed = Client(self.app(api_key=KEY), {"X-API-Key": KEY, "host": "escount-pc:8000"})
+        self.assertEqual(keyed.get("/projects").status_code, 200)        # with a key any host name works
+
+    def test_model_refused_after_calibration_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profiles = Path(tmp) / "projects"
+            shutil.copytree(self.profiles, profiles)
+            path = profiles / "SynA" / "project.json"
+            profile = ProjectProfile.load(path)
+            profile.angle_deg += 0.5
+            profile.save(path)
+            with self.assertRaisesRegex(ValueError, "calibration"):
+                InferenceEngine.load("SynA", profiles_root=profiles)
+            client = Client(create_app(ServerConfig(profiles_root=str(profiles), allowed_roots=(str(self.data),),
+                                                    general_config=str(self.config))))
+            response = client.post("/projects/SynA/load")
+            self.assertEqual(response.status_code, 422)
+            self.assertIn("calibration", response.text)
 
     def test_exposed_bind_requires_api_key(self):
         with self.assertRaises(ValueError):

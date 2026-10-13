@@ -66,3 +66,21 @@ tests/                       單元測試
 本專案為 Proprietary（All rights reserved），見 [LICENSE](LICENSE)。
 所有第三方依賴僅允許 MIT / BSD / Apache-2.0 / PSF / ISC / LGPL（動態連結），
 由 `scripts/check_licenses.py` 檢查，GPL / AGPL / SSPL / 商業授權一律拒絕；影像使用 `opencv-python-headless`。
+SPDX `A AND B` 授權須每一部分都在允許清單內。
+
+明確列出的例外（`scripts/check_licenses.py` 的 `ACCEPTED_EXCEPTIONS`）：
+
+| 套件 | 授權 | 原因 |
+|---|---|---|
+| tqdm 4.70.1 | MPL-2.0 AND MIT | optuna 的必要依賴，未修改原始碼直接使用；MPL-2.0 僅為檔案層級 copyleft（修改 tqdm 本身的檔案才須公開該檔），不收費、不限制使用 |
+
+httpx（certifi 為 MPL-2.0）未列為例外，測試改用 `tests/asgi_client.py`。
+
+## 研究成果與正式推論
+
+`escount research` / `escount report` 的命中率屬於研究程序（`candidates/<case>/best_params.json`）。
+正式推論（`escount infer`、Server、網頁）只使用 `escount train` + `escount select-rois` 產生的
+`outputs/projects/<case>/model/`；`escount adopt <case>` 只把候選設定複製到
+`outputs/projects/<case>/research/` 作為紀錄，推論不會讀取。`select-rois` 的命中數是在全部影像上挑選
+（偏樂觀），簡報請引用其 `nested_loio`（選擇在每個 fold 內重做）的數字。
+校正（CLI 或網頁）重新儲存後，舊模型會被拒絕載入，需重跑 `prepare` / `train` / `select-rois`。

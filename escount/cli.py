@@ -11,7 +11,8 @@
   escount research --trials N | --hours H [--cases ...] [--storage URL]
                                           -> Optuna autoresearch, research/<case>/results.tsv, candidates/
   escount report [--out outputs/research_report] -> presentation report (<timestamp>/ and latest/)
-  escount adopt <case>                    -> copy candidates/<case>/ into outputs/projects/<case>/research/
+  escount adopt <case>                    -> archive candidates/<case>/ in outputs/projects/<case>/research/
+                                             (record only: inference keeps using train + select-rois model/)
   escount serve [--host 127.0.0.1] [--port 8000] [--api-key K] [--root Data]
                                           -> FastAPI inference server (LabVIEW), OpenAPI at /docs
 The migrated V3 pipelines stay reachable unchanged:
@@ -137,7 +138,10 @@ def cmd_train(args):
 
 
 def _print_selection(name, result):
+    nested = result["nested_loio"]
     print(f"{name}: {result['roi_count']} ROIs, LOIO exact hits {result['hits']}/{result['total']} "
+          f"(subset chosen on all images, optimistic; selection-inside-fold estimate "
+          f"{nested['hits']}/{nested['total']}) "
           f"(full set {result['full_set']['hits']}/{result['full_set']['total']} with "
           f"{result['full_set']['roi_count']:g} ROIs/image); "
           f"{[r['key'] for r in result['selected_rois']]}")
@@ -159,7 +163,10 @@ def cmd_select_rois(args):
 def cmd_benchmark(args):
     from escount.inference.benchmark import benchmark
 
-    report = benchmark(resolve_project(args.project, args.data_root).name, args.data_root, args.profiles_root)
+    try:
+        report = benchmark(resolve_project(args.project, args.data_root).name, args.data_root, args.profiles_root)
+    except (FileNotFoundError, ValueError) as error:
+        raise SystemExit(f"escount benchmark: {error}") from error
     for item in report["per_image"]:
         stages = " ".join(f"{k}={v:.1f}" for k, v in item["timings_ms"].items())
         print(f"{item['image']}: pred={item['prediction']} gt={item['gt']} total={item['total_ms']:.1f} ms ({stages})")
@@ -236,7 +243,8 @@ def cmd_adopt(args):
         target = adopt(args.case, args.candidates_root, args.profiles_root)
     except FileNotFoundError as error:
         raise SystemExit(f"escount adopt: {error}") from error
-    print(f"adopted candidates/{args.case} -> {target.resolve()}")
+    print(f"copied candidates/{args.case} -> {target.resolve()} (record only: inference still uses "
+          f"outputs/projects/{args.case}/model/ from escount train + select-rois)")
     return 0
 
 
@@ -371,7 +379,8 @@ def build_parser():
     _research_paths(report)
     report.set_defaults(func=cmd_report)
 
-    adopt = sub.add_parser("adopt", help="copy candidates/<case>/ into the production profile (manual adoption)")
+    adopt = sub.add_parser("adopt", help="copy candidates/<case>/ to outputs/projects/<case>/research/ (record only; "
+                                         "inference still uses the train + select-rois model)")
     adopt.add_argument("case", help="case id (project or general)")
     adopt.add_argument("--candidates-root", default="candidates", help="candidate root (default: candidates)")
     adopt.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")

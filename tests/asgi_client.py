@@ -42,7 +42,8 @@ def request(app, method, path, *, json=None, content=None, files=None, headers=N
     elif content is not None:
         body = content
         headers.setdefault("content-type", content_type)
-    headers.update({"content-length": str(len(body)), "host": "testserver"})
+    headers["content-length"] = str(len(body))
+    headers.setdefault("host", "127.0.0.1:8000")
     scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method.upper(),
              "scheme": "http", "path": path, "raw_path": path.encode("utf-8"), "root_path": "",
              "query_string": urlencode(params or {}).encode("ascii"),

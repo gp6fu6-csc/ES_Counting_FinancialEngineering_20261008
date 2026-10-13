@@ -18,10 +18,13 @@ Project image folders are read from the first allowed root.
 
 Security: `escount serve` binds 127.0.0.1 by default and refuses any other host without an API key
 (check_bind). With an API key every request except /health, the OpenAPI docs and the static UI
-files needs the header X-API-Key (401 otherwise). /infer/path only reads files whose resolved path
-lies inside one of the configured allowed roots; '..' segments are rejected (403).
+files needs the header X-API-Key (401 otherwise). Without an API key only loopback Host headers
+(127.0.0.1, localhost, ::1) are answered (400 otherwise; DNS-rebinding guard). /infer/path only
+reads files whose path lies inside one of the configured allowed roots, checked lexically before
+any file-system access and again after resolve(); '..' segments and UNC paths are rejected (403).
 """
 import json
+import os
 import re
 import secrets
 import threading
@@ -72,6 +75,14 @@ def check_bind(host, api_key):
     """Refuse to expose the server beyond the loopback interface without an API key."""
     if host not in LOOPBACK_HOSTS and not api_key:
         raise ValueError(f"refusing to bind {host!r} without an API key: use --api-key (or bind 127.0.0.1)")
+
+
+def host_name(header):
+    """Host header without the port ('[::1]:8000' -> '::1', 'localhost:8000' -> 'localhost')."""
+    header = header.strip().lower()
+    if header.startswith("["):
+        return header[1:header.find("]")] if "]" in header else header
+    return header.rsplit(":", 1)[0] if header.count(":") == 1 else header
 
 
 def _is_public(path):
@@ -142,6 +153,7 @@ class ServerState:
         self.config = config
         self.profiles_root = Path(config.profiles_root)
         self.roots = [Path(root).resolve() for root in config.allowed_roots]
+        self.lexical_roots = [Path(os.path.abspath(root)) for root in config.allowed_roots]
         self.data_root = self.roots[0]            # project image folders (calibration / results pages)
         self.engines, self.current = {}, None
         self.lock = threading.Lock()
@@ -215,6 +227,14 @@ class ServerState:
                 self.current = (case, model)
         return engine
 
+    def unload(self, case):
+        """Drop every loaded engine of `case` (after its calibration changed)."""
+        with self.lock:
+            for key in [key for key in self.engines if key[0] == case]:
+                del self.engines[key]
+            if self.current and self.current[0] == case:
+                self.current = None
+
     def engine(self, project=None, model=None):
         if project is None and self.current is None:
             raise HTTPException(409, "no project loaded: POST /projects/{id}/load first")
@@ -228,6 +248,11 @@ class ServerState:
         path = Path(raw)
         if ".." in path.parts:
             raise HTTPException(403, "path traversal ('..') is not allowed")
+        if raw.startswith(("\\\\", "//")):           # UNC / device paths: never touch the network
+            raise HTTPException(403, "UNC / network paths are not allowed")
+        lexical = Path(os.path.abspath(raw))         # no file-system access before the root check
+        if not any(lexical.is_relative_to(root) for root in self.lexical_roots + self.roots):
+            raise HTTPException(403, "path is outside the allowed root folder(s)")
         resolved = path.resolve()
         if not any(resolved.is_relative_to(root) for root in self.roots):
             raise HTTPException(403, "path is outside the allowed root folder(s)")
@@ -371,6 +396,10 @@ def create_app(config=ServerConfig()):
 
     @app.middleware("http")
     async def require_api_key(request: Request, call_next):
+        if not config.api_key and host_name(request.headers.get("host", "")) not in LOOPBACK_HOSTS:
+            # keyless server = loopback only: refuse foreign Host headers (DNS rebinding)
+            return JSONResponse({"detail": "invalid Host header: the keyless server only answers 127.0.0.1 / "
+                                           "localhost"}, status_code=400)
         if config.api_key and not _is_public(request.url.path):
             supplied = request.headers.get(API_KEY_HEADER, "")
             if not secrets.compare_digest(supplied.encode("utf-8"), config.api_key.encode("utf-8")):
@@ -485,9 +514,11 @@ def create_app(config=ServerConfig()):
         profile = ProjectProfile.load(path)
         profile.strip_params = checked["strip_params"]
         profile.save(path)
+        state.unload(case)                        # loaded engines hold the old geometry
         return jsonable({"saved": True, "path": str(path.resolve()), "quality_status": profile.quality_status,
                          "profile": json.loads(profile.to_json()),
-                         "note": "geometry changed: re-run escount prepare / train / select-rois for this project"})
+                         "note": "geometry changed: re-run escount prepare / train / select-rois for this project "
+                                 "(its trained models are refused until then)"})
 
     # ------------------------------------------------------------ results page (Task 12, PDF p13-14)
     @app.get("/results/{case}/images")

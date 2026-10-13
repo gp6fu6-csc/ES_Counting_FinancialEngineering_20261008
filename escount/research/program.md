@@ -11,7 +11,10 @@ settings per case. These rules are fixed; a research run must not change them.
 2. **Single metric.** Exact hit rate only: an image is a hit iff `round(prediction) == GT`. No MAE, no ±1.
    Images for which a geometry yields no ROI row count as misses.
 3. **Rank key.** `(-hit_rate, roi_count, latency_ms)`: higher hit rate first, then fewer ROIs, then lower
-   latency.
+   latency. `latency_ms` is measured wall-clock time (`time.perf_counter`) of `predict` on cached
+   features, so a trial tied on hit rate and ROI count is kept or discarded by timing jitter: that
+   last tie-break, and therefore `status` in `results.tsv`, is not reproducible between runs.
+   Hit rate and ROI count are.
 4. **Fixed budget per trial** (`TrialBudget`, identical for all trials and cases): at most 200 training
    rows per image (deterministic subsample), 200 boosting rounds for XGBoost / LightGBM, at most 3000 SVR
    training rows. Each trial evaluates exactly one configuration.
@@ -20,8 +23,11 @@ settings per case. These rules are fixed; a research run must not change them.
    `status = keep` iff its rank key is strictly better than the current candidate; then the complete,
    reusable configuration is written to `candidates/<case>/best_params.json` (+ `per_image.csv`).
    Failed trials are recorded as `discard` with `hit_rate = nan`.
-6. **Manual adoption.** Production (`outputs/projects/<case>/`) is untouched by research.
-   `escount adopt <case>` copies the candidate to `outputs/projects/<case>/research/`.
+6. **Manual adoption (record only).** Production (`outputs/projects/<case>/`) is untouched by research.
+   `escount adopt <case>` copies the candidate to `outputs/projects/<case>/research/` as a record;
+   inference does not read it and keeps using `model/manifest.json` from `escount train` +
+   `escount select-rois`. Research hit rates describe the research procedure, not the deployed model
+   (its LOIO figures are in `model/manifest.json`).
 7. **ROI geometry.** Every strip row stays ≥ 50 px from the left/right edge of the background_BW valid
    region; adjacent strips overlap by less than w/3 (`D > 2w/3`, enforced by `AugmentGrid`); strips span
    the whole stack vertically.
