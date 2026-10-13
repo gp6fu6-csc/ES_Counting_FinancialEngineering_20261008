@@ -96,7 +96,10 @@ Vue.createApp({
         this.roiIndex = Math.min(this.roiIndex, Math.max(0, result.rois.length - 1));
         this.render();
       } catch (e) {
-        if (id === this.requestId) this.error = e.message;
+        if (id === this.requestId) {                             // do not leave the previous image's curves
+          this.error = e.message; this.result = null;
+          Object.values(charts).forEach((c) => c.clear());
+        }
       } finally {
         if (id === this.requestId) this.loading = false;
       }

@@ -90,3 +90,15 @@ select option { font-size: 1.1rem; }
 /* charts: full-width horizontal plots stacked vertically */
 .chart { display: block; width: 100%; min-width: 0; align-self: stretch; height: 26rem; }
 .chart.tall { height: 30rem; }
+
+/* training page */
+.steps { list-style: none; padding: 0; margin: 0 0 1rem; display: grid; gap: 0.7rem; }
+.steps li { border: 1px solid var(--line); border-radius: 8px; padding: 0.7rem 0.9rem; background: var(--panel-2); }
+.steps li.next { border-color: var(--accent); }
+.steps li.done .badge { color: var(--green); }
+.steps li.next .badge { color: var(--accent); }
+.step-head { display: flex; gap: 0.8rem; align-items: baseline; font-size: 1.15rem; }
+.badge { color: var(--muted); min-width: 6rem; }
+.job-title { font-size: 1.1rem; margin: 0.6rem 0; }
+.log { background: #0b0e14; border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem; max-height: 22rem;
+  overflow: auto; white-space: pre-wrap; font-size: 0.9rem; margin: 0; }

@@ -563,5 +563,74 @@ def create_app(config=ServerConfig()):
         result = state.run(engine, path, overrides=overrides or None)
         return preview_payload(engine, result, overrides)
 
+    # ---- training page: run the CLI steps (prepare -> train -> select-rois -> infer) as one background job
+    import subprocess
+    import sys
+
+    job = {"case": None, "step": None, "status": "idle", "log": [], "returncode": None}
+    job_lock = threading.Lock()
+
+    def step_status(case):
+        model_manifest = state.profiles_root / case / "model" / "manifest.json"
+        selected = False
+        if model_manifest.is_file():
+            try:
+                selected = bool(json.loads(model_manifest.read_text(encoding="utf-8")).get("selected_rois"))
+            except (OSError, ValueError):
+                selected = False
+        results = Path(config.results_root) / case
+        return {"calibrate": (state.profiles_root / case / PROFILE_NAME).is_file(),
+                "prepare": (Path("outputs/features") / case / "features.parquet").is_file(),
+                "train": model_manifest.is_file(),
+                "select": selected,
+                "infer": (results / "predictions.csv").is_file()}
+
+    def run_job(case, step, args):
+        command = [sys.executable, "-m", "escount.cli", *args]
+        job["log"].append("$ escount " + " ".join(args))
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                       encoding="utf-8", errors="replace",
+                                       env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+            for raw in process.stdout:
+                job["log"].append(raw.rstrip())
+                del job["log"][:-400]                     # keep the last 400 lines
+            job["returncode"] = process.wait()
+        except OSError as error:
+            job["log"].append(f"cannot start: {error}")
+            job["returncode"] = -1
+        if step in ("train", "select"):
+            state.unload(case)                            # next preview / infer loads the new model
+        job["status"] = "done" if job["returncode"] == 0 else "failed"
+
+    @app.get("/training/{case}/status")
+    def training_status(case: str):
+        state.case_dir(case)
+        return {"case": case, "steps": step_status(case), "job": job}
+
+    class TrainRequest(BaseModel):
+        step: Literal["prepare", "train", "select", "infer"]
+        device: Literal["cuda", "cpu"] = "cuda"
+
+    @app.post("/training/{case}/run")
+    def training_run(case: str, body: TrainRequest):
+        folder = state.case_dir(case)
+        steps = step_status(case)
+        order = ["calibrate", "prepare", "train", "select", "infer"]
+        missing = [s for s in order[:order.index(body.step)] if not steps[s]]
+        if missing:
+            raise HTTPException(409, f"請先完成前面的步驟：{', '.join(missing)}")
+        args = {"prepare": ["prepare", "--project", case],
+                "train": ["train", "--project", case, "--device", body.device],
+                "select": ["select-rois", "--project", case],
+                "infer": ["infer", "--project", case, "--input", str(folder),
+                          "--output", str(Path(config.results_root) / case)]}[body.step]
+        with job_lock:
+            if job["status"] == "running":
+                raise HTTPException(409, f"已有工作執行中：{job['case']} / {job['step']}")
+            job.update(case=case, step=body.step, status="running", log=[], returncode=None)
+        threading.Thread(target=run_job, args=(case, body.step, args), daemon=True).start()
+        return {"started": body.step, "case": case}
+
     app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
     return app
