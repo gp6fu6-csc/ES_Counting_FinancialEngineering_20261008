@@ -158,6 +158,12 @@ class ServerTests(unittest.TestCase):
             self.assertIn(path, paths)
         self.assertIn("multipart/form-data", paths["/infer/image"]["post"]["requestBody"]["content"])
 
+    def test_root_redirects_to_ui(self):
+        for app in (self.app(), self.app(api_key=KEY)):        # public even when an API key is set
+            response = Client(app).get("/")
+            self.assertIn(response.status_code, (302, 307))
+            self.assertEqual(response.headers["location"], "/ui/training.html")
+
 
 if __name__ == "__main__":
     unittest.main()

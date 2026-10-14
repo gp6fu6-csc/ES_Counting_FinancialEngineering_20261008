@@ -52,7 +52,7 @@ from escount.signals.roi_bank import MIN_SIDE_MARGIN, build_roi_bank, check_geom
 
 API_KEY_HEADER = "X-API-Key"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-PUBLIC_PATHS = frozenset({"/health", "/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"})
+PUBLIC_PATHS = frozenset({"/", "/health", "/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"})
 CASE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 IMAGE_SUFFIXES = (".png", ".bmp")
 IMAGE_MAGIC = (b"\x89PNG\r\n\x1a\n", b"BM")
@@ -405,6 +405,12 @@ def create_app(config=ServerConfig()):
             if not secrets.compare_digest(supplied.encode("utf-8"), config.api_key.encode("utf-8")):
                 return JSONResponse({"detail": f"missing or invalid {API_KEY_HEADER} header"}, status_code=401)
         return await call_next(request)
+
+    @app.get("/", include_in_schema=False)
+    def root():
+        """Root URL opens the web UI (training page links to calibration and results)."""
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse("/ui/training.html")
 
     @app.get("/health")
     def health():
