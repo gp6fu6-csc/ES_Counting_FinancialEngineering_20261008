@@ -5,7 +5,8 @@ candidates/
 *.7z
 *.pdf
 
-# research database (Optuna SQLite)
+# research outputs (Optuna SQLite, results.tsv, research feature caches); escount/research/ is code
+/research/
 research/*.db
 *.db
 *.sqlite

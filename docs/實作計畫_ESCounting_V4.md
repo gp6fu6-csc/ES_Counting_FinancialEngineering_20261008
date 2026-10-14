@@ -19,7 +19,7 @@
 | 投影 | 僅寬度方向（平均 / 高斯加權 / 中位數），**垂直方向不平滑** |
 | 推論效能 | 最少 ROI，CPU 單張 < 1 秒（不含模型載入） |
 | Server | FastAPI；預設 127.0.0.1；開放 0.0.0.0 時強制 `X-API-Key`；`/infer/path` 限制根目錄 |
-| 研究 | autoresearch 方法：固定評估器、單一指標、固定預算、`results.tsv` keep/discard；Optuna + SQLite 可中斷續跑；成果進 `candidates/`，人工 adopt |
+| 研究 | autoresearch 方法：固定評估器、單一指標、固定預算、`results.tsv` keep/discard；Optuna + SQLite 可中斷續跑；成果進 `candidates/`，人工 adopt（目前僅複製候選設定至 profile 的 `research/` 作紀錄；正式推論模型仍由 train + select-rois 產生） |
 | 硬體 | RTX 3090、64 GB RAM、Xeon W-2223；訓練/研究全本機離線（XGBoost CUDA，自動退回 CPU） |
 | General | 幾何各專案獨立；計片模型合併訓練、尺度正規化特徵；LOIO + LOPO；比較含/不含 Ring-type，效果不彰則排除 |
 | 結構 | `escount/` 套件；CLI `escount <cmd>`；既有測試遷移後全通過 |
@@ -51,7 +51,7 @@ graph LR
 4. **指標庫**（像素為單位、純函數）：MA、EMA、MACD（DIF/DEA/柱）、KD（RSV/K/D）、布林通道（%b、頻寬）、`find_peaks`（prominence、距離）、自相關 / FFT 主週期。「焦點與 threshold」= 閘門與 prominence 門檻。
 5. **特徵**（每 ROI）：各指標計數、L/週期、正規化 x / w / L、SNR、std、週期穩定度。
 6. **模型**：目標 δ = GT − round(L/週期)；Ridge / SVR / XGBoost / LightGBM；ROI 預測取中位數或截尾平均後取整；ML 須在 Grouped LOO 完全命中率勝過最佳單一指標 baseline 才採用。
-7. **精簡 ROI**：「位置 × w × 投影」槽位貪婪前向選擇，至命中率不再提升；實測 CPU 延遲 < 1 秒。
+7. **精簡 ROI**：「位置 × w × 投影」槽位貪婪前向選擇；ROI 數依「選擇在 fold 內重做」的誠實命中率決定（命中率優先、同分取最少 ROI，不以 ROI 數換命中率），baseline 的完整 ROI 組較佳時保留完整組；實測 CPU 延遲 < 1 秒。
 8. **推論**：載入 profile → 旋轉 → 最少 ROI → 投影 → 指標 → 模型 → 輸出。每項輸出皆有開關（預設全開）、可調 dpi；`result.json` 記錄各階段耗時；SHA 確保原始資料未變。
 
 ### 輸出結構（依 PDF p7、p9–11）
@@ -80,13 +80,15 @@ graph LR
 | `<case>/param_sensitivity.png` | 各參數對命中率影響 |
 | `<case>/per_image.csv` | GT、預測、是否命中（LOO） |
 | `comparison/project_vs_general.{csv,png}` | LOIO / LOPO 命中率 + Wilson 信賴區間 |
-| `comparison/ring_inclusion.png` | General 含 / 不含 Ring-type |
+| `comparison/ring_inclusion.png` | General 含 / 不含 Ring-type（僅在 Ring-type 重新納入時產生；目前排除，改於 summary.md 說明） |
 | `comparison/roi_count_vs_hit.png` | ROI 數量 vs 命中率 |
 | `comparison/param_importance_heatmap.png` | 參數 × 專案重要度 |
 | `comparison/latency.png` | 推論延遲 |
 | `summary.md`、`report.html` | 自包含報告（嵌入所有圖表） |
 
-case 包含：4 個專案、`general`、`general_no_ring`。圖片統一 16:9、200 dpi、Microsoft JhengHei 字型。
+case 包含：position1、position2、T-type、`general`。
+
+> 決策更新：Ring-type 分析結果不可靠（LOIO 完全命中僅 3/6），已依使用者決定以設定（`excluded_projects` / `exclude_from_general`）排除於訓練與正式執行之外；`Data/Ring-type` 原始檔案不變，日後移出排除清單即可重新納入。圖片統一 16:9、200 dpi、Microsoft JhengHei 字型。
 
 ## 6. 任務清單
 
@@ -102,7 +104,7 @@ case 包含：4 個專案、`general`、`general_no_ring`。圖片統一 16:9、
 | 7 | 最少 ROI 選擇與延遲基準 | CPU < 1 秒 |
 | 8 | 推論引擎與 CLI | 端到端、輸出開關生效 |
 | 9 | 研究器常駐與簡報成果輸出 | 續跑、keep/discard、報告檔案齊全 |
-| 10 | FastAPI Server | TestClient：載入 / 推論 / API Key / 路徑越界 |
+| 10 | FastAPI Server | 行程內 ASGI 測試（不用 httpx：其相依 certifi 為 MPL-2.0，不在授權白名單）：載入 / 推論 / API Key / 路徑越界 |
 | 11 | Web 校正頁（p12） | API 測試 + 手動驗收清單 |
 | 12 | Web 結果頁（p13–14） | `/preview` 與 CLI 一致 |
 | 13 | 全量執行與定版（feature 分支 + PR） | 全測試、授權、延遲、資料 SHA 不變 |

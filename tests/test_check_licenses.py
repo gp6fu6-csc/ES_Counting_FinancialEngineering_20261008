@@ -22,6 +22,15 @@ class ClassifyTests(unittest.TestCase):
                      "MIT; GNU General Public License v2 (GPLv2)", "Some custom licence"):
             self.assertFalse(check_licenses.classify(text)[0], text)
 
+    def test_and_expression_needs_every_part_and_exceptions_are_explicit(self):
+        self.assertTrue(check_licenses.classify("MIT AND BSD-3-Clause")[0])
+        self.assertFalse(check_licenses.classify("MPL-2.0 AND MIT")[0])
+        self.assertFalse(check_licenses.check_package("certifi", "MPL-2.0")[0])
+        ok, reason = check_licenses.check_package("tqdm", "MPL-2.0 AND MIT")
+        self.assertTrue(ok)
+        self.assertIn("accepted exception", reason)
+        self.assertFalse(check_licenses.check_package("tqdm", "GPL-3.0")[0])
+
 
 if __name__ == "__main__":
     unittest.main()

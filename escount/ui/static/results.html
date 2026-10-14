@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESCounting V4 · 結果</title>
+  <link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+<div id="app" v-cloak>
+  <header class="topbar">
+    <h1>ESCounting V4<span>結果 Data / Result Visualization</span></h1>
+    <nav aria-label="頁面">
+      <a href="/ui/calibration.html">校正</a>
+      <a href="/ui/training.html">訓練</a>
+      <a href="/ui/results.html" class="active" aria-current="page">結果</a>
+    </nav>
+    <label class="apikey">API Key
+      <input type="password" v-model="apiKey" @change="saveKey" autocomplete="off" placeholder="(本機可留空)">
+    </label>
+  </header>
+
+  <main class="layout results">
+    <aside class="panel side" aria-label="專案、模型與影像">
+      <label class="field"><span>選擇資料夾</span>
+        <select v-model="caseId" @change="loadCase">
+          <option disabled value="">— 選擇專案 —</option>
+          <option v-for="p in projects" :key="p.case" :value="p.case" :disabled="!p.has_model">
+            {{ p.case }}{{ p.has_model ? '' : '（未訓練）' }}</option>
+        </select>
+      </label>
+      <label class="field"><span>模型</span>
+        <select v-model="model" @change="modelChanged" :disabled="!models.length">
+          <option v-for="m in models" :key="m" :value="m">{{ m === 'project' ? '專案客製化模型 (Project)' : 'General 模型' }}</option>
+        </select>
+      </label>
+      <div class="list" role="listbox" aria-label="影像清單">
+        <button v-for="img in images" :key="img.name" class="item" role="option" :aria-selected="img.name === image"
+                :class="{ active: img.name === image }" @click="selectImage(img.name)">
+          <span>{{ img.name }}</span>
+          <span v-if="img.complete" class="mark" title="已有完整分析結果 (escount infer)">✱ {{ img.stored_N_pred }}</span>
+        </button>
+      </div>
+      <p class="legend">✱ = 已有完整分析結果（escount infer 輸出）</p>
+    </aside>
+
+    <section class="panel stage" aria-label="分析結果">
+      <div class="summary" aria-live="polite">
+        <span class="npred">N_pred = {{ result ? result.N_pred : '?' }}</span>
+        <span class="meta" v-if="result">GT = {{ result.gt ?? '—' }}
+          <span v-if="result.hit !== null" :class="result.hit ? 'status-ok' : 'status-bad'">{{ result.hit ? '命中' : '未命中' }}</span>
+          · {{ result.model_case }} · {{ result.method === 'ml' ? result.model_type : 'baseline' }}
+          · {{ result.timings_ms.total.toFixed(1) }} ms</span>
+        <span class="meta" v-if="loading">計算中…</span>
+      </div>
+      <div class="roi-nav" v-if="result && result.rois.length">
+        <button @click="moveRoi(-1)" :disabled="roiIndex === 0" aria-label="上一組 ROI">◀</button>
+        <span>ROI <strong>N{{ roi.index }}</strong> / {{ result.rois.length }} · {{ roi.label }} ·
+          N{{ roi.index }}_pred = <strong>{{ roi.prediction.toFixed(2) }}</strong></span>
+        <button @click="moveRoi(1)" :disabled="roiIndex >= result.rois.length - 1" aria-label="下一組 ROI">▶</button>
+      </div>
+      <div class="params">
+        <fieldset>
+          <legend>MACD (px)</legend>
+          <label class="field"><span>EMA1</span><input type="number" min="1" max="500" v-model.number="macd.ema1" @input="edited"></label>
+          <label class="field"><span>EMA2</span><input type="number" min="1" max="500" v-model.number="macd.ema2" @input="edited"></label>
+          <label class="field"><span>DEA</span><input type="number" min="1" max="500" v-model.number="macd.dea" @input="edited"></label>
+        </fieldset>
+        <fieldset>
+          <legend>KD (px)</legend>
+          <label class="field"><span>RSV</span><input type="number" min="1" max="500" v-model.number="kd.n" @input="edited"></label>
+          <label class="field"><span>K</span><input type="number" min="1" max="500" v-model.number="kd.k" @input="edited"></label>
+          <label class="field"><span>D</span><input type="number" min="1" max="500" v-model.number="kd.d" @input="edited"></label>
+        </fieldset>
+      </div>
+      <div class="actions">
+        <button @click="resetParams" :disabled="!result">恢復模型訓練參數</button>
+        <span class="hint" v-if="result">{{ affectNote }}</span>
+      </div>
+      <p class="error" v-if="error" role="alert">{{ error }}</p>
+      <div ref="signal" class="chart" role="img" :aria-label="'ROI 投影訊號與高低點'"></div>
+      <div ref="macd" class="chart" role="img" aria-label="MACD 圖：DIF、DEA、柱狀與交叉點"></div>
+      <div ref="kd" class="chart tall" role="img" aria-label="KD 圖：RSV、K、D 與交叉點"></div>
+      <p class="hint">滑鼠滾輪縮放、拖曳平移（三張圖同步），下方滑桿可選取區間。</p>
+    </section>
+  </main>
+</div>
+<script src="/ui/vendor/vue.global.prod.js"></script>
+<script src="/ui/vendor/echarts.min.js"></script>
+<script src="/ui/common.js"></script>
+<script src="/ui/results.js"></script>
+</body>
+</html>

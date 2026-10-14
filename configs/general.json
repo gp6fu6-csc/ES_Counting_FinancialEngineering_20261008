@@ -1,0 +1,7 @@
+{
+  "excluded_projects": ["Ring-type"],
+  "exclude_from_general": ["Ring-type"],
+  "excluded_reason": {
+    "Ring-type": "分析結果不可靠（Project 模型 LOIO 完全命中僅 3/6，legacy 1/6），依使用者決定視為例外排除"
+  }
+}
