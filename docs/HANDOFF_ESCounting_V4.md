@@ -13,7 +13,7 @@
 |---|---|---|---|
 | 0 | 網頁「訓練」頁（prepare → train → select-rois → infer 引導） | ✅ 完成 | `escount/ui/static/training.html/.js`；API `GET /training/{case}/status`、`POST /training/{case}/run`；commit `201bf18` |
 | 1 | 根網址 `http://127.0.0.1:8000/` 404 | ✅ 完成 | 根網址自動導向 `/ui/training.html`（設定 API key 時也可開啟）；`tests/test_server.py::test_root_redirects_to_ui` |
-| 2 | 訓練頁自動化測試 | ⏳ 未開始 | 以 Server 測試 client 驗證 status / run 順序檢查 / 同時只跑一個工作 / 完成後卸載模型 |
+| 2 | 訓練頁自動化測試 | ✅ 完成 | `tests/test_training_page.py`（6 tests，以假的子行程取代真實 CLI）：步驟狀態、順序檢查、成功/失敗記錄、同時只跑一個工作、train 後卸載模型、infer 參數；全部 118 tests 通過。ServerConfig 新增 `features_root` |
 | 3 | 開 PR 並合併 `feat/escount-v4` → `main` | ⏳ 未開始 | 無 `gh`，用 GitHub REST API |
 | 4 | 正式研究與簡報報告 | ⏳ 未開始 | `escount research --trials 50` → `escount report`，檢查 `outputs/research_report/latest/` 每個 case 檔案齊全 |
 

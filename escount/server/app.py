@@ -69,6 +69,7 @@ class ServerConfig:
     api_key: Optional[str] = None
     general_config: str = "configs/general.json"
     results_root: str = "outputs/infer"   # `escount infer` outputs (<case>/<image stem>/...) for the results page
+    features_root: str = "outputs/features"  # `escount prepare` cache (training page step status)
 
 
 def check_bind(host, api_key):
@@ -586,7 +587,7 @@ def create_app(config=ServerConfig()):
                 selected = False
         results = Path(config.results_root) / case
         return {"calibrate": (state.profiles_root / case / PROFILE_NAME).is_file(),
-                "prepare": (Path("outputs/features") / case / "features.parquet").is_file(),
+                "prepare": (Path(config.features_root) / case / "features.parquet").is_file(),
                 "train": model_manifest.is_file(),
                 "select": selected,
                 "infer": (results / "predictions.csv").is_file()}
