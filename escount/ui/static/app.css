@@ -102,3 +102,81 @@ select option { font-size: 1.1rem; }
 .job-title { font-size: 1.1rem; margin: 0.6rem 0; }
 .log { background: #0b0e14; border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem; max-height: 22rem;
   overflow: auto; white-space: pre-wrap; font-size: 0.9rem; margin: 0; }
+
+/* ROI 橫置切片影像軌道與放大檢視 */
+.roi-slice-container {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.8rem;
+}
+.roi-slice-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.95rem;
+  color: var(--muted);
+  margin-bottom: 0.4rem;
+}
+.roi-slice-header .title {
+  color: var(--text);
+  font-weight: 600;
+}
+.roi-slice-header .align-hint {
+  font-size: 0.85rem;
+  color: var(--accent);
+}
+.roi-slice-track {
+  position: relative;
+  width: 100%;
+  height: 64px;
+  background: #11151c;
+  border: 1px solid #2a3142;
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  padding: 0 24px 0 56px; /* 與 ECharts grid.left (56px) / grid.right (24px) 1:1 像素對齊 */
+}
+.roi-slice-img {
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.roi-slice-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #f0b90b;
+  box-shadow: 0 0 4px #f0b90b;
+  pointer-events: none;
+  z-index: 10;
+  display: none;
+}
+.roi-zoom-preview {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+}
+
+/* Q7: 功能拓展需求！醒目標示 */
+.feature-expand-field {
+  border-left: 3px solid #f0b90b;
+  padding-left: 0.5rem;
+  background: rgba(240, 185, 11, 0.05);
+  border-radius: 4px;
+}
+.feature-tag {
+  color: #f0b90b !important;
+  font-weight: 700;
+  font-size: 0.95rem;
+}

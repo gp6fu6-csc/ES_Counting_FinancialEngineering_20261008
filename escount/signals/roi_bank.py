@@ -63,7 +63,7 @@ def build_roi_bank(rotated_mask, widths=DEFAULT_WIDTHS, *, pitch, side_margin=MI
     return slots
 
 
-def stack_rows(image, slots, edge_tolerance=STACK_EDGE_TOLERANCE_PX):
+def stack_rows(image, slots, edge_tolerance=STACK_EDGE_TOLERANCE_PX, top_margin=0, bottom_margin=0):
     """Detect the stack rows with es_counting.stack_extent and clip slots to them.
 
     Returns (extent dict with y0/y1, kept slots with y0/y1 = their intersection with the extent).
@@ -75,11 +75,13 @@ def stack_rows(image, slots, edge_tolerance=STACK_EDGE_TOLERANCE_PX):
     extent = stack_extent(image, layout)
     if extent["y1"] - extent["y0"] < 2:
         raise ValueError("stack extent is shorter than 2 rows")
-    return extent, clip_slots(slots, extent, edge_tolerance)
+    return extent, clip_slots(slots, extent, edge_tolerance=edge_tolerance, top_margin=top_margin, bottom_margin=bottom_margin)
 
 
-def clip_slots(slots, extent, edge_tolerance=STACK_EDGE_TOLERANCE_PX):
+def clip_slots(slots, extent, edge_tolerance=STACK_EDGE_TOLERANCE_PX, top_margin=0, bottom_margin=0):
     """Clip slots to a stack extent; drop slots that do not span it (same rule as stack_rows)."""
-    y0, y1 = extent["y0"], extent["y1"]
-    return [replace(s, y0=max(s.y0, y0), y1=min(s.y1, y1)) for s in slots
-            if s.y0 <= y0 + edge_tolerance and s.y1 >= y1 - edge_tolerance]
+    target_y0 = max(0, extent["y0"] - top_margin)
+    target_y1 = extent["y1"] + bottom_margin
+    base_y0, base_y1 = extent["y0"], extent["y1"]
+    return [replace(s, y0=max(s.y0, target_y0), y1=min(s.y1, target_y1)) for s in slots
+            if s.y0 <= base_y0 + edge_tolerance and s.y1 >= base_y1 - edge_tolerance]

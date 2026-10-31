@@ -217,3 +217,31 @@ def image_features(rotated_image, items, ext_slots, valid_x0, valid_width, grid,
     extent, _ = stack_rows(rotated_image, ext_slots)
     kept = clip_items(items, extent)
     return roi_features(rotated_image, kept, valid_x0, valid_width, grid.gaussian_sigma_ratio, indicators), extent
+
+
+def load_indicator_configs(config_path="configs/indicators.json"):
+    """Load indicator configurations from JSON if available, falling back to FEATURE_INDICATORS."""
+    path = Path(config_path)
+    if not path.is_file():
+        return FEATURE_INDICATORS
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        items = []
+        for item in data.get("indicators", []):
+            name = item["name"]
+            params_dict = item.get("params", {})
+            gate = item.get("gate")
+            if name == "kd":
+                params = KDParams(**params_dict)
+            elif name == "macd":
+                params = MACDParams(**params_dict)
+            elif name == "peaks":
+                params = PeakParams(**params_dict)
+            elif name == "bollinger":
+                params = BollingerParams(**params_dict)
+            else:
+                continue
+            items.append(IndicatorConfig(name, params, gate))
+        return tuple(items) if items else FEATURE_INDICATORS
+    except Exception:
+        return FEATURE_INDICATORS

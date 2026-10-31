@@ -330,6 +330,7 @@ class PreviewRequest(BaseModel):
     case: str
     image: str
     model: ModelChoice = "project"
+    method: Optional[str] = "auto"    # Q7: auto / baseline / kd / macd / xgboost
     macd: Optional[MACDBody] = None   # None = the model's trained parameters
     kd: Optional[KDBody] = None
 
@@ -351,6 +352,8 @@ def preview_payload(engine, result, overrides):
         params[family] = {**asdict(value), "gate": config.gate, "column": source["column"],
                           "trained": asdict(config.params), "affects_prediction": source["affects_prediction"]}
     rois = []
+    from escount.signals.projection import crop_horizontal_slice
+    rotated_img = result.get("rotated")
     for roi, panel in zip(result["rois"], engine._signals(result)):
         signal = panel["signal"]
         lines = {"macd": macd(signal, configs["macd"].params), "kd": kd(signal, configs["kd"].params)}
@@ -359,9 +362,15 @@ def preview_payload(engine, result, overrides):
             number, death, golden = count(signal, configs[family])
             charts[family] = {**{name: _series(getattr(line, name)) for name in line._fields},
                               "golden": [int(i) for i in golden], "death": [int(i) for i in death], "count": number}
+        slice_b64 = None
+        if rotated_img is not None and "slot" in roi:
+            try:
+                slice_b64 = crop_horizontal_slice(rotated_img, roi["slot"], as_png_base64=True)
+            except Exception:
+                slice_b64 = None
         rois.append({**{key: value for key, value in roi.items() if key != "slot"}, "signal": _series(signal),
                      "highs": [int(i) for i in panel["high_idx"]], "lows": [int(i) for i in panel["low_idx"]],
-                     "label": panel["label"], **charts})
+                     "label": panel["label"], "slice_image": slice_b64, **charts})
     record = {key: result[key] for key in ("image", "case", "model", "model_case", "method", "model_type", "N_pred",
                                            "gt", "hit", "timings_ms")}
     marks = engine.marks
@@ -561,6 +570,10 @@ def create_app(config=ServerConfig()):
         from escount.indicators.core import KDParams, MACDParams
 
         engine = state.cached_engine(body.case, body.model)
+        if body.method and body.method != "auto":
+            engine.runtime.forced_method = body.method
+        else:
+            engine.runtime.forced_method = None
         path = state.case_image(body.case, body.image)
         overrides = {}
         if body.macd:
@@ -568,6 +581,8 @@ def create_app(config=ServerConfig()):
         if body.kd:
             overrides["kd"] = KDParams(**body.kd.model_dump())
         result = state.run(engine, path, overrides=overrides or None)
+        if body.method and body.method != "auto":
+            result["method"] = body.method
         return preview_payload(engine, result, overrides)
 
     # ---- training page: run the CLI steps (prepare -> train -> select-rois -> infer) as one background job

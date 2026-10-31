@@ -66,3 +66,33 @@ def placeholder(path, title, message):
     ax.text(0.5, 0.42, message, ha="center", va="center", fontsize=20, color="#555555", wrap=True,
             transform=ax.transAxes)
     return save(figure, path)
+
+
+def plot_param_sensitivity_matrix(path, title, x_param_name, x_values, y_param_name, y_values, hit_matrix):
+    """Plot a 2D parameter sensitivity heatmap for quantitative comparison (Q6).
+
+    hit_matrix shape: (len(y_values), len(x_values)) with exact hit rates [0.0 .. 1.0].
+    """
+    setup_style()
+    fig, ax = new_figure(nrows=1, ncols=1)
+    im = ax.imshow(hit_matrix, cmap="viridis", origin="lower", aspect="auto", vmin=0.0, vmax=1.0)
+    ax.set_xticks(range(len(x_values)))
+    ax.set_xticklabels(x_values)
+    ax.set_yticks(range(len(y_values)))
+    ax.set_yticklabels(y_values)
+    ax.set_xlabel(f"{x_param_name}")
+    ax.set_ylabel(f"{y_param_name}")
+    ax.set_title(title)
+    
+    # Text annotate cells
+    for r in range(len(y_values)):
+        for c in range(len(x_values)):
+            val = hit_matrix[r][c]
+            text_color = "white" if val < 0.6 else "black"
+            ax.text(c, r, f"{val:.1%}", ha="center", va="center", color=text_color, fontsize=11)
+            
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("完全命中率 (Exact Hit Rate)")
+    fig.tight_layout()
+    save(fig, path)
+    return path

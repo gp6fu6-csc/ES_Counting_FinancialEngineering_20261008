@@ -210,7 +210,10 @@ class EndToEndTests(unittest.TestCase):
             path = Path(directory) / "model.json"
             model.save_model(str(path))
             loaded = xgboost.XGBRegressor()
-            loaded.load_model(str(path))
+            try:
+                loaded.load_model(str(path))
+            except xgboost.core.XGBoostError:
+                loaded.load_model(bytearray(path.read_bytes()))
             np.testing.assert_allclose(model.predict(x), loaded.predict(x))
 
 

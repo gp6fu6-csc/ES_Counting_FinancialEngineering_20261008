@@ -14,7 +14,10 @@ function baseOption(title, rows) {
     xAxis: { type: "category", data: rows, boundaryGap: false, axisLabel: { color: C.muted },
              axisLine: { lineStyle: { color: C.grid } } },
     yAxis: { type: "value", scale: true, axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.grid } } },
-    dataZoom: [{ type: "inside", zoomOnMouseWheel: true, moveOnMouseMove: true, throttle: 30 }],
+    dataZoom: [
+      { id: "insideZoom", type: "inside", zoomOnMouseWheel: true, moveOnMouseMove: true, throttle: 20 },
+      { id: "sliderZoom", type: "slider", show: false, throttle: 20 }
+    ],
   };
 }
 
@@ -29,7 +32,7 @@ const line = (name, data, color, extra = {}) =>
 Vue.createApp({
   data() {
     return {
-      apiKey: ESC.apiKey(), projects: [], caseId: "", models: [], model: "project", images: [], image: "",
+      apiKey: ESC.apiKey(), projects: [], caseId: "", models: [], model: "project", methodChoice: "auto", images: [], image: "",
       macd: { ema1: 2, ema2: 4, dea: 2 }, kd: { n: 4, k: 2, d: 2 }, overridden: false,
       result: null, roiIndex: 0, error: "", loading: false, requestId: 0, zoomKey: "",
     };
@@ -46,8 +49,75 @@ Vue.createApp({
     this.schedule = ESC.debounce(() => this.preview(), 400);
     for (const key of ["signal", "macd", "kd"]) charts[key] = echarts.init(this.$refs[key], "dark");
     echarts.connect([charts.signal, charts.macd, charts.kd]);   // zoom / pan / tooltip in sync
+    
+    // 頂部橫置光學切片即時更新指示線 (支援滑鼠在 signal, macd, kd, slider 任一處滑動)
+    const updateCursor = (params) => {
+      const cursor = this.$refs.sliceCursor;
+      const track = this.$refs.sliceTrack;
+      if (!cursor || !track || !this.roi) return;
+      if (!params || !params.axesInfo || !params.axesInfo.length) {
+        return;
+      }
+      const axisInfo = params.axesInfo[0];
+      const dataVal = axisInfo.value; // x 軸對應的數值或索引
+      const y0 = this.roi.y0, y1 = this.roi.y1;
+      let ratio = 0;
+      if (typeof dataVal === "number" && dataVal >= y0 && dataVal <= y1) {
+        ratio = (dataVal - y0) / (y1 - y0);
+      } else {
+        // 若傳入的是 category 索引
+        const total = Math.max(1, (y1 - y0));
+        ratio = typeof dataVal === "number" ? Math.max(0, Math.min(1, dataVal / total)) : 0;
+      }
+      ratio = Math.max(0, Math.min(1, ratio));
+      // Track 內部扣除 padding (left: 56px, right: 24px) 1:1 精確對齊 ECharts 畫布
+      const leftPad = 56, rightPad = 24;
+      const contentWidth = track.clientWidth - leftPad - rightPad;
+      const posX = leftPad + ratio * contentWidth;
+      cursor.style.left = `${posX}px`;
+      cursor.style.display = "block";
+    };
+
+    let isSyncingZoom = false;
+
+    for (const key of ["signal", "macd", "kd"]) {
+      // 在 NX_pred(signal)、MACD、KD 任何一個圖表滑動時，均觸發游標更新
+      charts[key].on("updateAxisPointer", updateCursor);
+      charts[key].on("globalout", () => {
+        if (this.$refs.sliceCursor) this.$refs.sliceCursor.style.display = "none";
+      });
+
+      // 拖拉 KD 或下方縮圖滑桿時，完美強同步 signal (NX_pred) 與 macd
+      charts[key].on("dataZoom", (evt) => {
+        if (isSyncingZoom) return;
+        isSyncingZoom = true;
+        try {
+          const batch = evt.batch ? evt.batch[0] : evt;
+          const start = batch.start !== undefined ? batch.start : undefined;
+          const end = batch.end !== undefined ? batch.end : undefined;
+          const startValue = batch.startValue !== undefined ? batch.startValue : undefined;
+          const endValue = batch.endValue !== undefined ? batch.endValue : undefined;
+          
+          for (const otherKey of ["signal", "macd", "kd"]) {
+            if (otherKey !== key) {
+              const action = { type: "dataZoom" };
+              if (start !== undefined && end !== undefined) {
+                action.start = start;
+                action.end = end;
+              } else if (startValue !== undefined && endValue !== undefined) {
+                action.startValue = startValue;
+                action.endValue = endValue;
+              }
+              charts[otherKey].dispatchAction(action);
+            }
+          }
+        } finally {
+          setTimeout(() => { isSyncingZoom = false; }, 20);
+        }
+      });
+    }
+
     window.addEventListener("resize", () => Object.values(charts).forEach((c) => c.resize()));
-    // charts are created before the layout settles; re-measure whenever a container changes size
     const observer = new ResizeObserver(() => Object.values(charts).forEach((c) => c.resize()));
     for (const key of ["signal", "macd", "kd"]) observer.observe(this.$refs[key]);
     try {
@@ -82,7 +152,7 @@ Vue.createApp({
     async preview() {
       if (!this.caseId || !this.image) return;
       const id = ++this.requestId;
-      const body = { case: this.caseId, image: this.image, model: this.model };
+      const body = { case: this.caseId, image: this.image, model: this.model, method: this.methodChoice };
       if (this.overridden) Object.assign(body, { macd: { ...this.macd }, kd: { ...this.kd } });
       this.loading = true;
       try {
@@ -124,7 +194,10 @@ Vue.createApp({
       const kd = baseOption(`KD (RSV ${this.kd.n}, K ${this.kd.k}, D ${this.kd.d}) · 計數 ${k.count}`, rows);
       kd.yAxis = { ...kd.yAxis, scale: false, min: 0, max: 100 };
       kd.grid = { ...kd.grid, bottom: 64 };
-      kd.dataZoom = [kd.dataZoom[0], { type: "slider", bottom: 12, height: 22, textStyle: { color: C.muted } }];
+      kd.dataZoom = [
+        { id: "insideZoom", type: "inside", zoomOnMouseWheel: true, moveOnMouseMove: true, throttle: 20 },
+        { id: "sliderZoom", type: "slider", show: true, bottom: 12, height: 22, textStyle: { color: C.muted }, throttle: 20 }
+      ];
       kd.series = [line("RSV", k.rsv, C.rsv, { lineStyle: { width: 1, color: C.rsv, opacity: 0.6 } }),
                    line("K", k.k, C.k), line("D", k.d, C.d),
                    marks("黃金交叉", k.golden, k.k, C.up, "triangle"), marks("死亡交叉", k.death, k.k, C.down, "pin")];

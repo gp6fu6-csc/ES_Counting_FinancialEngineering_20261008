@@ -26,7 +26,7 @@ from scipy.signal import lfilter
 
 from escount.calibration.rotation_correction import (
     EXCLUDED_IMAGE_NAMES, MASK_NAME, MASK_VALID_THRESHOLD, estimate_boxes, normalize_mask,
-    rotate_image, rotate_mask, save_comparison, select_mask_roi, write_image,
+    read_image, rotate_image, rotate_mask, save_comparison, select_mask_roi, write_image,
 )
 
 # ---- Engineering assumptions (not specified by the PDF; recorded in JSON outputs) ----
@@ -85,11 +85,15 @@ def tree_signatures(root):
 
 # ---------------------------------------------------------------- ground truth / images
 def parse_ground_truth(name):
-    """Return {"count", "group"} from a file name like 096, 083_2, 075-1; None if not numeric."""
-    match = GT_PATTERN.match(Path(name).stem)
-    if not match:
-        return None
-    return {"count": int(match.group(1)), "group": int(match.group(2)) if match.group(2) else 1}
+    """Return {"count", "group"} from a file name like 096, 083_2, 075-1, or 05x-f8-92pcs; None if not numeric."""
+    stem = Path(name).stem
+    match = GT_PATTERN.match(stem)
+    if match:
+        return {"count": int(match.group(1)), "group": int(match.group(2)) if match.group(2) else 1}
+    pcs_match = re.search(r"(\d+)\s*pcs", stem, re.IGNORECASE)
+    if pcs_match:
+        return {"count": int(pcs_match.group(1)), "group": 1}
+    return None
 
 
 def list_images(scenario_dir):
@@ -107,7 +111,7 @@ def pick_reference(paths):
 
 
 def read_gray(path):
-    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    image = read_image(path, cv2.IMREAD_UNCHANGED)
     if image is None:
         raise IOError(f"unreadable image: {path}")
     if image.ndim != 2 or image.dtype != np.uint8:
@@ -117,7 +121,7 @@ def read_gray(path):
 
 def read_mask(scenario_dir):
     path = Path(scenario_dir) / MASK_NAME
-    mask = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    mask = read_image(path, cv2.IMREAD_UNCHANGED)
     if mask is None:
         raise IOError(f"missing or unreadable mask: {path}")
     return path, mask
@@ -836,7 +840,7 @@ def _collect_inputs(inputs):
 def _check_compatible(path, rotation):
     """Reject images that cannot belong to the calibrated scenario."""
     calibrated_mask = Path(rotation["mask"]["source"])
-    shape = cv2.imread(str(calibrated_mask), cv2.IMREAD_UNCHANGED).shape[:2]
+    shape = read_image(calibrated_mask, cv2.IMREAD_UNCHANGED).shape[:2]
     gray = read_gray(path)
     if gray.shape != shape:
         raise ValueError(f"image size {gray.shape} differs from the calibrated scenario {shape}")

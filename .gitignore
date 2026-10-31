@@ -25,3 +25,5 @@ dist/
 # local agent workspace files (not project content)
 .agents/
 .kiro/
+
+*.zip

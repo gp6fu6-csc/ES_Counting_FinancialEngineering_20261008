@@ -81,7 +81,10 @@ def load_model(model_dir, single_thread=False):
         import xgboost
 
         model = xgboost.XGBRegressor()
-        model.load_model(str(path))
+        try:
+            model.load_model(str(path))
+        except xgboost.core.XGBoostError:
+            model.load_model(bytearray(path.read_bytes()))
         model.set_params(device="cpu", n_jobs=1 if single_thread else None)
     elif kind == "lgbm":
         import lightgbm

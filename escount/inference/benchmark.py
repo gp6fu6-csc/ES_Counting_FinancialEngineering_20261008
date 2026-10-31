@@ -132,6 +132,27 @@ class ProjectRuntime:
 
         if rows.empty:
             return np.array([])
+        # 支援多方案預測模式 (Q7: baseline / kd / macd / xgboost)
+        method_choice = getattr(self, "forced_method", None) or self.manifest.get("method", "baseline")
+        
+        if method_choice == "xgboost" or (method_choice == "ml" and self.manifest["method"] == "ml"):
+            delta = self.model.predict(feature_frame(rows, self.manifest["scale_normalised"]))
+            return rows["period_count"].to_numpy(dtype=np.float64) + delta
+        elif method_choice == "kd":
+            kd_cols = [c for c in rows.columns if c.startswith("cnt_kd_")]
+            chosen_col = kd_cols[0] if kd_cols else self.manifest.get("baseline", {}).get("column", "period_count")
+            return rows[chosen_col].to_numpy(dtype=np.float64)
+        elif method_choice == "macd":
+            macd_cols = [c for c in rows.columns if c.startswith("cnt_macd_")]
+            chosen_col = macd_cols[0] if macd_cols else self.manifest.get("baseline", {}).get("column", "period_count")
+            return rows[chosen_col].to_numpy(dtype=np.float64)
+        elif method_choice == "baseline":
+            base_col = self.manifest.get("baseline", {}).get("column")
+            if base_col and base_col in rows.columns:
+                return rows[base_col].to_numpy(dtype=np.float64)
+            return rows["period_count"].to_numpy(dtype=np.float64)
+        
+        # 預設行為
         if self.manifest["method"] == "ml":
             delta = self.model.predict(feature_frame(rows, self.manifest["scale_normalised"]))
             return rows["period_count"].to_numpy(dtype=np.float64) + delta

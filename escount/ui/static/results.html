@@ -34,6 +34,17 @@
           <option v-for="m in models" :key="m" :value="m">{{ m === 'project' ? '專案客製化模型 (Project)' : 'General 模型' }}</option>
         </select>
       </label>
+      <!-- Q7: 功能拓展需求！預測演算法下拉選單 -->
+      <label class="field feature-expand-field">
+        <span class="feature-tag">★ 功能拓展需求！</span>
+        <select v-model="methodChoice" @change="preview" :disabled="!caseId">
+          <option value="auto">Auto (系統推薦最佳方案)</option>
+          <option value="baseline">純 Baseline (指標基準線)</option>
+          <option value="kd">純 KD 指標計數方案</option>
+          <option value="macd">純 MACD 指標計數方案</option>
+          <option value="xgboost">XGBoost 機器學習預測</option>
+        </select>
+      </label>
       <div class="list" role="listbox" aria-label="影像清單">
         <button v-for="img in images" :key="img.name" class="item" role="option" :aria-selected="img.name === image"
                 :class="{ active: img.name === image }" @click="selectImage(img.name)">
@@ -78,6 +89,23 @@
         <span class="hint" v-if="result">{{ affectNote }}</span>
       </div>
       <p class="error" v-if="error" role="alert">{{ error }}</p>
+
+      <!-- 階段一任務 1.3: ROI 橫置影像切片對齊軌道 (方向與下圖橫軸 100% 一致) -->
+      <div class="roi-slice-container" v-if="roi && roi.slice_image">
+        <div class="roi-slice-header">
+          <span class="title">ROI 橫置光學切片 (左: 上緣 y={{ roi.y0 }} ➔ 右: 下緣 y={{ roi.y1 }})</span>
+          <span class="align-hint">【1:1 像素對齊】與下方訊號波形及指標圖橫軸完全同向</span>
+        </div>
+        <div class="roi-slice-track" ref="sliceTrack">
+          <img :src="roi.slice_image" class="roi-slice-img" alt="ROI 橫置切片影像">
+          <div class="roi-slice-cursor" ref="sliceCursor"></div>
+        </div>
+        <div class="roi-zoom-preview">
+          <span>條帶寬度 w={{ roi.w }} px · 長度 L={{ roi.y1 - roi.y0 }} px · 投影: {{ roi.projection }}</span>
+          <span>滑鼠游標指針即時連動對齊真實鋼片紋理</span>
+        </div>
+      </div>
+
       <div ref="signal" class="chart" role="img" :aria-label="'ROI 投影訊號與高低點'"></div>
       <div ref="macd" class="chart" role="img" aria-label="MACD 圖：DIF、DEA、柱狀與交叉點"></div>
       <div ref="kd" class="chart tall" role="img" aria-label="KD 圖：RSV、K、D 與交叉點"></div>

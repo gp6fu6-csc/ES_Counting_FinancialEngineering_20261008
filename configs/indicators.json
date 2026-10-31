@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "description": "ESCounting V4 Indicator & Counter Grid Configuration",
+  "indicators": [
+    { "name": "kd", "params": { "n": 4, "k": 2, "d": 2 }, "gate": 20 },
+    { "name": "kd", "params": { "n": 3, "k": 5, "d": 3 }, "gate": 30 },
+    { "name": "kd", "params": { "n": 4, "k": 3, "d": 7 }, "gate": 40 },
+    { "name": "kd", "params": { "n": 6, "k": 3, "d": 3 }, "gate": 20 },
+    { "name": "kd", "params": { "n": 9, "k": 3, "d": 3 }, "gate": 0 },
+    { "name": "kd", "params": { "n": 13, "k": 5, "d": 5 }, "gate": 40 },
+    { "name": "macd", "params": { "ema1": 2, "ema2": 4, "dea": 2 }, "gate": null },
+    { "name": "macd", "params": { "ema1": 2, "ema2": 5, "dea": 3 }, "gate": 1.0 },
+    { "name": "macd", "params": { "ema1": 3, "ema2": 8, "dea": 3 }, "gate": 0.5 },
+    { "name": "macd", "params": { "ema1": 4, "ema2": 12, "dea": 4 }, "gate": 0.0 },
+    { "name": "macd", "params": { "ema1": 6, "ema2": 16, "dea": 5 }, "gate": null },
+    { "name": "macd", "params": { "ema1": 7, "ema2": 22, "dea": 6 }, "gate": 0.0 },
+    { "name": "peaks", "params": { "prominence": null, "distance": null }, "gate": 0.25 },
+    { "name": "peaks", "params": { "prominence": null, "distance": null }, "gate": 0.5 },
+    { "name": "peaks", "params": { "prominence": null, "distance": 4 }, "gate": 0.25 },
+    { "name": "peaks", "params": { "prominence": null, "distance": null }, "gate": 1.0 },
+    { "name": "bollinger", "params": { "window": 10, "k": 2.0 }, "gate": 0.5 },
+    { "name": "bollinger", "params": { "window": 20, "k": 2.0 }, "gate": 0.3 }
+  ],
+  "research_search_space": {
+    "macd": {
+      "ema1": [2, 3, 4, 5, 6, 7],
+      "ema2": [4, 6, 8, 12, 16, 22],
+      "dea": [2, 3, 4, 5, 6]
+    },
+    "kd": {
+      "n": [3, 4, 6, 9, 13, 18],
+      "k": [2, 3, 5],
+      "d": [2, 3, 5, 7]
+    }
+  }
+}

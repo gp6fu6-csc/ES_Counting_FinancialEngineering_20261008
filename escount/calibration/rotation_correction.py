@@ -105,10 +105,33 @@ def rotate_mask(mask, angle):
     return cv2.warpAffine(appearance, matrix, (width, height), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=255)
 
 
+def read_image(path, flags=cv2.IMREAD_UNCHANGED):
+    """Read an image from path safely supporting Unicode/non-ASCII paths on Windows."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "rb") as f:
+            buf = np.frombuffer(f.read(), dtype=np.uint8)
+        return cv2.imdecode(buf, flags)
+    except Exception:
+        return None
+
+
 def write_image(path, image):
-    if not cv2.imwrite(str(path), image):
-        raise IOError(f"unable to write image: {path}")
-    if cv2.imread(str(path), cv2.IMREAD_UNCHANGED) is None:
+    """Write an image safely supporting Unicode/non-ASCII paths on Windows."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ext = path.suffix or ".png"
+    ok, buf = cv2.imencode(ext, image)
+    if not ok:
+        raise IOError(f"unable to encode image: {path}")
+    try:
+        with open(path, "wb") as f:
+            f.write(buf)
+    except Exception as e:
+        raise IOError(f"unable to write image: {path}: {e}")
+    if read_image(path) is None:
         raise IOError(f"written image is unreadable: {path}")
 
 
@@ -260,14 +283,14 @@ def run_with_parameters(input_path, parameters_path, output_path, metadata_path)
         raise ValueError("parameters JSON rotation settings do not match rotate_image()")
 
     original_size, original_hash = _file_signature(input_path)
-    original = cv2.imread(str(input_path), cv2.IMREAD_UNCHANGED)
+    original = read_image(input_path, cv2.IMREAD_UNCHANGED)
     if original is None:
         raise ValueError(f"unable to read image: {input_path}")
     corrected = rotate_image(original, compensation)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     write_image(output_path, corrected)
-    readable = cv2.imread(str(output_path), cv2.IMREAD_UNCHANGED)
+    readable = read_image(output_path, cv2.IMREAD_UNCHANGED)
     if readable is None:
         raise IOError(f"written image is unreadable: {output_path}")
     shape_matches = readable.shape == original.shape
@@ -306,7 +329,7 @@ def run_with_parameters(input_path, parameters_path, output_path, metadata_path)
 
 def run(input_path, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
-    original = cv2.imread(str(input_path), cv2.IMREAD_GRAYSCALE)
+    original = read_image(input_path, cv2.IMREAD_GRAYSCALE)
     if original is None:
         raise ValueError(f"unable to read image: {input_path}")
     boxes, before_rois, estimated = estimate_image(original)
@@ -680,7 +703,7 @@ def _run_batch_dataset(data_root, output_root, dataset_name):
     image_paths = _batch_image_paths(dataset_dir)
     mask_path = dataset_dir / MASK_NAME
     source_before = _all_source_signatures(dataset_dir)
-    mask = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
+    mask = read_image(mask_path, cv2.IMREAD_UNCHANGED)
     analysis_contract = {
         "status": "unavailable",
         "model_status": "not_supplied",
@@ -765,7 +788,7 @@ def _run_batch_dataset(data_root, output_root, dataset_name):
     reference = None
     reference_path = dataset_dir / "096.png" if dataset_name == BATCH_DATASETS[0] else None
     if reference_path:
-        reference_image = cv2.imread(str(reference_path), cv2.IMREAD_GRAYSCALE)
+        reference_image = read_image(reference_path, cv2.IMREAD_GRAYSCALE)
         if reference_image is None or tuple(reference_image.shape) != tuple(mask.shape[:2]):
             reference = {"mode": "reference_096", "path": str(reference_path.resolve()), "status": "failed"}
         else:
@@ -805,7 +828,7 @@ def _run_batch_dataset(data_root, output_root, dataset_name):
         compensation = None
         reference_gate_failure = False
         try:
-            image_raw = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
+            image_raw = read_image(image_path, cv2.IMREAD_UNCHANGED)
             if image_raw is None:
                 raise ValueError("unable to read image")
             if image_raw.ndim != 2 or image_raw.dtype != np.uint8:
@@ -882,7 +905,7 @@ def _run_batch_dataset(data_root, output_root, dataset_name):
                 results.append(result)
                 continue
             write_image(corrected_path, corrected)
-            readable = cv2.imread(str(corrected_path), cv2.IMREAD_UNCHANGED)
+            readable = read_image(corrected_path, cv2.IMREAD_UNCHANGED)
             if readable is None or readable.shape != gray.shape or readable.dtype != gray.dtype:
                 raise IOError("corrected image shape or dtype does not match input")
             rotated_mask = rotate_mask(mask, compensation)
