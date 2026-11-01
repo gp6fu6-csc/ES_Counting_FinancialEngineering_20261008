@@ -194,7 +194,7 @@ def cmd_infer(args):
     try:
         with threadpool_limits(limits=1):
             engine = InferenceEngine.load(case, args.model, args.profiles_root, args.config)
-            results = engine.run(args.input, output, options)
+            results = engine.run(args.input, output, options, method=args.method)
     except (FileNotFoundError, ValueError) as error:
         raise SystemExit(f"escount infer: {error}") from error
     finally:
@@ -211,6 +211,20 @@ def cmd_infer(args):
 
 
 def cmd_research(args):
+    track = getattr(args, "track", "default")
+    if track == "mae":
+        from scripts.run_research_mae import run_mae_research
+        run_mae_research(cases=args.cases, trials=args.trials or 5, device=args.device)
+        return 0
+    if track == "exact":
+        from scripts.run_research_exact_hit import run_exact_research
+        run_exact_research(cases=args.cases, trials=args.trials or 5, device=args.device)
+        return 0
+    if track == "ensemble":
+        from scripts.run_research_ensemble import run_ensemble_research
+        run_ensemble_research(cases=args.cases, trials=args.trials or 5, device=args.device)
+        return 0
+
     from escount.features.cache import case_ids
     from escount.research.daemon import Researcher
 
@@ -354,6 +368,8 @@ def build_parser():
     infer.add_argument("--project", required=True, help="case id (profile under --profiles-root) or profile folder")
     infer.add_argument("--input", required=True, help="image file or folder of PNG images")
     infer.add_argument("--output", help="output folder (default: outputs/infer/<case>)")
+    infer.add_argument("--method", choices=("auto", "baseline", "kd", "macd", "xgboost"), default="auto",
+                       help="prediction method override (default: auto)")
     infer.add_argument("--model", choices=("project", "general"), default="project",
                        help="project model or the production General model (default: project)")
     infer.add_argument("--no-plots", action="store_true", help="skip analysis.png")
@@ -366,6 +382,8 @@ def build_parser():
     infer.set_defaults(func=cmd_infer)
 
     research = sub.add_parser("research", help="Optuna TPE autoresearch over every case (resumable, SQLite)")
+    research.add_argument("--track", choices=("default", "mae", "exact", "ensemble"), default="default",
+                          help="AutoResearch track: default, mae (Track 1), exact (Track 2: Soft-loss + Classifier), ensemble (Track 3: low-resource ML blend)")
     budget = research.add_mutually_exclusive_group(required=True)
     budget.add_argument("--trials", type=int, help="new trials per case (round-robin)")
     budget.add_argument("--hours", type=float, help="total wall-clock hours (round-robin)")

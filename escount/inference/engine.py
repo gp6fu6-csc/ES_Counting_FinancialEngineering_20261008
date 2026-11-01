@@ -226,12 +226,15 @@ class InferenceEngine:
             rows[f"{column}_up"], rows[f"{column}_down"], rows[f"{column}_both"] = up, down, (up + down) / 2.0
         return rows
 
-    def infer(self, source, name=None, overrides=None):
+    def infer(self, source, name=None, overrides=None, method=None):
         """N_pred of one image (uint8 gray array or file path). Returns a result dict (see module doc).
 
         `overrides` ({"macd": MACDParams, "kd": KDParams}) recomputes those indicator features before
         the model (results page live preview); None = the trained parameters.
+        `method`: 'auto', 'baseline', 'kd', 'macd', or 'xgboost' (forces prediction method).
         """
+        if method is not None:
+            self.runtime.forced_method = method if method != "auto" else None
         timings = {}
         if isinstance(source, np.ndarray):
             gray, path = source, None
@@ -341,8 +344,10 @@ class InferenceEngine:
         record.update(outputs=list(outputs), dpi=options.dpi if options.analysis_plot else None)
         return record
 
-    def run(self, source, out_dir, options=OutputOptions()):
+    def run(self, source, out_dir, options=OutputOptions(), method=None):
         """Infer a file or folder; per-image outputs + <out_dir>/predictions.csv. Returns result dicts."""
+        if method is not None:
+            self.runtime.forced_method = method if method != "auto" else None
         paths = collect_inputs(source)
         out_dir = Path(out_dir).resolve()
         input_root = Path(source).resolve() if Path(source).is_dir() else paths[0].resolve().parent

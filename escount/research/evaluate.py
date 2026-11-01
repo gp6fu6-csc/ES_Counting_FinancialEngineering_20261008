@@ -34,6 +34,8 @@ class EvalResult:
     per_image: pd.DataFrame
     scheme: str = "LOIO"
     row_predictions: pd.Series = field(default=None, repr=False)
+    mae: float = 0.0
+    within_1_rate: float = 0.0
 
 
 def exact_hit(prediction, truth):
@@ -44,6 +46,14 @@ def exact_hit(prediction, truth):
 
 def rank_key(result):
     return (-result.hit_rate, result.roi_count, result.latency_ms)
+
+
+def rank_key_mae(result):
+    return (result.mae, result.roi_count, result.latency_ms)
+
+
+def rank_key_exact(result):
+    return (-result.hits, result.mae, result.roi_count, result.latency_ms)
 
 
 def wilson_interval(hits, total, z=1.96):
@@ -89,9 +99,13 @@ def evaluate(procedure, table, scheme="LOIO", keep_row_predictions=False):
     per_image["scheme"] = scheme
     per_image["fold"] = per_image["image_id"].map(folds)
     hits, total = int(per_image["hit"].sum()), len(per_image)
+    errors = (per_image["prediction"] - per_image["gt"]).abs()
+    mae = float(np.nanmean(errors)) if len(errors) else 0.0
+    within_1_rate = float(np.nanmean(errors <= 1.0)) if len(errors) else 0.0
     return EvalResult(hit_rate=hits / total, hits=hits, total=total, roi_count=float(np.median(roi_counts)),
                       latency_ms=1000.0 * seconds / total, per_image=per_image, scheme=scheme,
-                      row_predictions=pd.concat(row_parts) if keep_row_predictions else None)
+                      row_predictions=pd.concat(row_parts) if keep_row_predictions else None,
+                      mae=mae, within_1_rate=within_1_rate)
 
 
 def hits_by_case(result):
