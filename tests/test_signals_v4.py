@@ -99,6 +99,18 @@ class RoiBankGeometryTests(unittest.TestCase):
         self.assertTrue(all(s.x + s.w + 50 <= 250 for s in covering))
         self.assertGreater(len(covering), 0)
 
+    def test_stack_rows_full_span_preserves_valid_boundaries(self):
+        mask = np.zeros((600, 400), dtype=np.uint8)
+        image = np.full((600, 400), 12, dtype=np.uint8)
+        rows = np.arange(150, 500)
+        image[150:500] = np.where((rows - 150) % 12 < 8, 170, 40)[:, None]
+        slots = build_roi_bank(mask, widths=[10], pitch=30)
+        extent, covering = stack_rows(image, slots, full_span=True)
+        self.assertEqual(len(covering), len(slots))
+        self.assertTrue(all(s.y0 == 0 and s.y1 == 600 for s in covering))
+        self.assertGreater(extent["y0"], 100)
+        self.assertLess(extent["y1"], 550)
+
 
 class ProjectionTests(unittest.TestCase):
     def setUp(self):

@@ -135,7 +135,7 @@ def strip_layout(rotated_image, rotated_mask, strips):
     """
     bank = build_roi_bank(rotated_mask, (strips.w,), pitch=strips.pitch, side_margin=strips.side_margin,
                           x_offset=strips.x_offset)
-    extent, kept = stack_rows(rotated_image, bank)
+    extent, kept = stack_rows(rotated_image, bank, full_span=True)
     if len(kept) < strips.n:
         raise ValueError(f"only {len(kept)} strips of w={strips.w} px, D={strips.pitch} px span the stack "
                          f"(requested N={strips.n})")
@@ -341,8 +341,10 @@ def _series(values):
 
 def preview_payload(engine, result, overrides):
     """N_pred + per-ROI signal / MACD / KD series and events for the results page charts."""
+    from escount.features.extract import projection_sigma
     from escount.indicators.core import kd, macd
     from escount.indicators.counters import IndicatorConfig, count
+    from escount.signals.projection import crop_horizontal_slice, project
 
     params, configs = {}, {}
     for family, source in engine.indicator_sources.items():
@@ -352,10 +354,30 @@ def preview_payload(engine, result, overrides):
         params[family] = {**asdict(value), "gate": config.gate, "column": source["column"],
                           "trained": asdict(config.params), "affects_prediction": source["affects_prediction"]}
     rois = []
-    from escount.signals.projection import crop_horizontal_slice
     rotated_img = result.get("rotated")
+    ratio = engine.runtime.grid.gaussian_sigma_ratio if hasattr(engine, "runtime") and hasattr(engine.runtime, "grid") else 0.5
+
+    # 建立全有效範圍（非 supporter）槽位對照表，確保結果頁圖表與切片均從頂部（0 訊號）畫到底部 (PDF P.8 & P.10)
+    items_by_key = {}
+    if hasattr(engine, "runtime") and hasattr(engine.runtime, "items"):
+        for s, proj in engine.runtime.items:
+            items_by_key[(s.x, s.w, proj)] = s
+
     for roi, panel in zip(result["rois"], engine._signals(result)):
-        signal = panel["signal"]
+        disp_slot = roi.get("slot")
+        proj = roi.get("projection")
+        if disp_slot is not None and (disp_slot.x, disp_slot.w, proj) in items_by_key:
+            disp_slot = items_by_key[(disp_slot.x, disp_slot.w, proj)]
+            if rotated_img is not None:
+                signal = project(rotated_img, disp_slot, proj, projection_sigma(proj, disp_slot.w, ratio))
+                _, high_idx, low_idx = count(signal, engine.marks) if signal.size >= 2 else (0, [], [])
+            else:
+                signal = panel["signal"]
+                high_idx, low_idx = panel["high_idx"], panel["low_idx"]
+        else:
+            signal = panel["signal"]
+            high_idx, low_idx = panel["high_idx"], panel["low_idx"]
+
         lines = {"macd": macd(signal, configs["macd"].params), "kd": kd(signal, configs["kd"].params)}
         charts = {}
         for family, line in lines.items():
@@ -363,13 +385,17 @@ def preview_payload(engine, result, overrides):
             charts[family] = {**{name: _series(getattr(line, name)) for name in line._fields},
                               "golden": [int(i) for i in golden], "death": [int(i) for i in death], "count": number}
         slice_b64 = None
-        if rotated_img is not None and "slot" in roi:
+        if rotated_img is not None and disp_slot is not None:
             try:
-                slice_b64 = crop_horizontal_slice(rotated_img, roi["slot"], as_png_base64=True)
+                slice_b64 = crop_horizontal_slice(rotated_img, disp_slot, as_png_base64=True)
             except Exception:
                 slice_b64 = None
-        rois.append({**{key: value for key, value in roi.items() if key != "slot"}, "signal": _series(signal),
-                     "highs": [int(i) for i in panel["high_idx"]], "lows": [int(i) for i in panel["low_idx"]],
+        roi_data = {key: value for key, value in roi.items() if key != "slot"}
+        if disp_slot is not None:
+            roi_data["y0"] = int(disp_slot.y0)
+            roi_data["y1"] = int(disp_slot.y1)
+        rois.append({**roi_data, "signal": _series(signal),
+                     "highs": [int(i) for i in high_idx], "lows": [int(i) for i in low_idx],
                      "label": panel["label"], "slice_image": slice_b64, **charts})
     record = {key: result[key] for key in ("image", "case", "model", "model_case", "method", "model_type", "N_pred",
                                            "gt", "hit", "timings_ms")}

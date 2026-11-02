@@ -207,9 +207,7 @@ Vue.createApp({
       ctx.setLineDash([8, 6]); ctx.strokeStyle = COLORS.valid;
       ctx.strokeRect(x0 * s, y0 * s, (x1 - x0) * s, (y1 - y0) * s);
       ctx.setLineDash([]);
-      const { y0: top, y1: bottom } = this.result.stack_extent;
-      ctx.strokeStyle = COLORS.stack;
-      [top, bottom].forEach((y) => { ctx.beginPath(); ctx.moveTo(0, y * s); ctx.lineTo(canvas.width, y * s); ctx.stroke(); });
+      // PDF P.8: 取消電磁鋼上源切線，條帶由非 supporter 有效全區間繪製
       const strips = this.result.strips;
       const roomy = strips.length < 2 || (strips[1].x - strips[0].x) * s >= 34;   // room for one label per strip
       strips.forEach((strip) => {

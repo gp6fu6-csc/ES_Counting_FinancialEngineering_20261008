@@ -63,25 +63,33 @@ def build_roi_bank(rotated_mask, widths=DEFAULT_WIDTHS, *, pitch, side_margin=MI
     return slots
 
 
-def stack_rows(image, slots, edge_tolerance=STACK_EDGE_TOLERANCE_PX, top_margin=0, bottom_margin=0):
+def stack_rows(image, slots, edge_tolerance=STACK_EDGE_TOLERANCE_PX, top_margin=0, bottom_margin=0, full_span=False):
     """Detect the stack rows with es_counting.stack_extent and clip slots to them.
 
     Returns (extent dict with y0/y1, kept slots with y0/y1 = their intersection with the extent).
     A slot is kept only if it spans the whole stack: its valid rows may miss at most `edge_tolerance`
     px at the top/bottom end of the extent (the rotated mask edge is slanted by a few px); slots
     whose valid run stops inside the stack (e.g. interrupted by a fixture) are dropped.
+    If full_span=True, kept slots retain their full valid non-supporter vertical span [s.y0, s.y1].
     """
     layout = {"strips": [{"x": s.x, "y0": s.y0, "y1": s.y1, "width": s.w} for s in slots]}
     extent = stack_extent(image, layout)
     if extent["y1"] - extent["y0"] < 2:
         raise ValueError("stack extent is shorter than 2 rows")
-    return extent, clip_slots(slots, extent, edge_tolerance=edge_tolerance, top_margin=top_margin, bottom_margin=bottom_margin)
+    return extent, clip_slots(slots, extent, edge_tolerance=edge_tolerance, top_margin=top_margin, bottom_margin=bottom_margin, full_span=full_span)
 
 
-def clip_slots(slots, extent, edge_tolerance=STACK_EDGE_TOLERANCE_PX, top_margin=0, bottom_margin=0):
-    """Clip slots to a stack extent; drop slots that do not span it (same rule as stack_rows)."""
+def clip_slots(slots, extent, edge_tolerance=STACK_EDGE_TOLERANCE_PX, top_margin=0, bottom_margin=0, full_span=False):
+    """Clip slots to a stack extent; drop slots that do not span it (same rule as stack_rows).
+
+    When full_span=True, kept slots retain their full valid non-supporter span (s.y0, s.y1)
+    extended to the valid region bounds, without being truncated to the stack activity boundaries.
+    """
     target_y0 = max(0, extent["y0"] - top_margin)
     target_y1 = extent["y1"] + bottom_margin
     base_y0, base_y1 = extent["y0"], extent["y1"]
+    if full_span:
+        return [replace(s, y0=min(s.y0, target_y0), y1=max(s.y1, target_y1)) for s in slots
+                if s.y0 <= base_y0 + edge_tolerance and s.y1 >= base_y1 - edge_tolerance]
     return [replace(s, y0=max(s.y0, target_y0), y1=min(s.y1, target_y1)) for s in slots
             if s.y0 <= base_y0 + edge_tolerance and s.y1 >= base_y1 - edge_tolerance]
