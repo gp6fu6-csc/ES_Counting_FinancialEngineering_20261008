@@ -161,6 +161,18 @@ def cmd_select_rois(args):
     return 0
 
 
+def cmd_all_rois(args):
+    from escount.models.all_rois import train_all_rois
+
+    case = resolve_project(args.project, args.data_root).name
+    info = train_all_rois(case, args.profiles_root, args.data_root, args.device)
+    rec = info["recommended"]
+    eval_rec = info["evaluation"].get(rec, {})
+    print(f"[{case}] all-rois ensemble: {info['roi_count']} ROIs; recommended={rec} "
+          f"(LOIO exact hits {eval_rec.get('hits')}/{eval_rec.get('total')}, MAE {eval_rec.get('mae')})")
+    return 0
+
+
 def cmd_benchmark(args):
     from escount.inference.benchmark import benchmark
 
@@ -194,7 +206,7 @@ def cmd_infer(args):
     try:
         with threadpool_limits(limits=1):
             engine = InferenceEngine.load(case, args.model, args.profiles_root, args.config)
-            results = engine.run(args.input, output, options, method=args.method)
+            results = engine.run(args.input, output, options, method=args.method, roi_mode=args.roi_mode)
     except (FileNotFoundError, ValueError) as error:
         raise SystemExit(f"escount infer: {error}") from error
     finally:
@@ -359,6 +371,12 @@ def build_parser():
     select.add_argument("--config", default="configs/general.json", help="General config (excluded_projects)")
     select.set_defaults(func=cmd_select_rois)
 
+    all_rois = sub.add_parser("all-rois", help="train multi-ROI ensemble on all counting strips (strip_params)")
+    all_rois.add_argument("--project", required=True, help="case id or project folder path")
+    _common(all_rois)
+    all_rois.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
+    all_rois.set_defaults(func=cmd_all_rois)
+
     bench = sub.add_parser("benchmark", help="single-thread CPU latency of the selected ROIs (< 1 s per image)")
     bench.add_argument("--project", required=True, help="case id or project folder path")
     _common(bench, cache=False)
@@ -368,8 +386,10 @@ def build_parser():
     infer.add_argument("--project", required=True, help="case id (profile under --profiles-root) or profile folder")
     infer.add_argument("--input", required=True, help="image file or folder of PNG images")
     infer.add_argument("--output", help="output folder (default: outputs/infer/<case>)")
-    infer.add_argument("--method", choices=("auto", "baseline", "kd", "macd", "xgboost"), default="auto",
+    infer.add_argument("--method", choices=("auto", "baseline", "kd", "macd", "xgboost", "ridge", "trimmed_mean"), default="auto",
                        help="prediction method override (default: auto)")
+    infer.add_argument("--roi-mode", choices=("minimal", "all"), default="minimal",
+                       help="ROI set to use: minimal (selected_rois) or all (all_rois from strip_params)")
     infer.add_argument("--model", choices=("project", "general"), default="project",
                        help="project model or the production General model (default: project)")
     infer.add_argument("--no-plots", action="store_true", help="skip analysis.png")

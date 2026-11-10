@@ -34,15 +34,24 @@
           <option v-for="m in models" :key="m" :value="m">{{ m === 'project' ? '專案客製化模型 (Project)' : 'General 模型' }}</option>
         </select>
       </label>
+      <label class="field"><span>ROI 方案</span>
+        <select v-model="roiMode" @change="roiModeChanged" :disabled="!caseId">
+          <option value="minimal">最少 ROI (Minimal)</option>
+          <option value="all">全部 ROI (All Strips)</option>
+        </select>
+      </label>
       <!-- Q7: 功能拓展需求！預測演算法下拉選單 -->
       <label class="field feature-expand-field">
         <span class="feature-tag">★ 功能拓展需求！</span>
         <select v-model="methodChoice" @change="preview" :disabled="!caseId">
-          <option value="auto">Auto (系統推薦最佳方案)</option>
+          <option value="auto">Auto (系統推薦最佳方案{{ recommendedEnsemble ? ': ' + recommendedEnsemble : '' }})</option>
+          <option v-if="roiMode === 'all'" value="xgboost">XGBoost 多 ROI 智能整合</option>
+          <option v-if="roiMode === 'all'" value="ridge">Ridge 空間加權整合</option>
+          <option v-if="roiMode === 'all'" value="trimmed_mean">去極值平均 (Trimmed Mean)</option>
           <option value="baseline">純 Baseline (指標基準線)</option>
           <option value="kd">純 KD 指標計數方案</option>
           <option value="macd">純 MACD 指標計數方案</option>
-          <option value="xgboost">XGBoost 機器學習預測</option>
+          <option v-if="roiMode === 'minimal'" value="xgboost">XGBoost 機器學習預測</option>
         </select>
       </label>
       <div class="list" role="listbox" aria-label="影像清單">

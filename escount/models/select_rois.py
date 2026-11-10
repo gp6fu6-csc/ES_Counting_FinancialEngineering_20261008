@@ -236,6 +236,11 @@ def select_project(case, cache_root="outputs/features", profiles_root="outputs/p
     profile = ProjectProfile.load(profile_path)
     profile.selected_rois = result["selected_rois"]
     profile.save(profile_path)
+    try:
+        from escount.models.all_rois import train_all_rois
+        train_all_rois(case, profiles_root=profiles_root, device=device)
+    except Exception as err:
+        warnings.warn(f"all_rois ensemble training skipped: {err}")
     return result
 
 

@@ -49,9 +49,12 @@ def single_thread():
 class ProjectRuntime:
     """Everything needed to predict one image of a project with its selected ROIs."""
 
-    def __init__(self, profile, items, ext_slots, grid, model, manifest):
+    def __init__(self, profile, items, ext_slots, grid, model, manifest, all_items=None, ensemble_meta=None):
         self.profile, self.items, self.ext_slots, self.grid = profile, items, ext_slots, grid
         self.model, self.manifest = model, manifest
+        self.all_items = all_items or items
+        self.ensemble_meta = ensemble_meta
+        self.roi_mode = "minimal"
         x0, _, x1, _ = profile.valid_region["bbox"]
         self.valid_x0, self.valid_width = x0, x1 - x0
 
@@ -84,25 +87,49 @@ class ProjectRuntime:
             if slot is None:
                 raise ValueError(f"{case}: selected ROI {roi['key']} does not fit the current mask; {RETRAIN.format(case=case)}")
             items.append((slot, roi["projection"]))
-        return cls(profile, items, extent_slots(mask, grid.side_margin), grid, model, manifest)
 
-    def kept_items(self, extent, dropped=None):
+        all_items = []
+        all_spec = manifest.get("all_rois")
+        if all_spec:
+            for roi in all_spec:
+                bank = build_roi_bank(mask, (roi["w"],), pitch=roi["pitch"], side_margin=grid.side_margin,
+                                      x_offset=roi["x_offset"])
+                slot = next((s for s in bank if s.x == roi["x"]), None)
+                if slot is not None:
+                    all_items.append((slot, roi["projection"]))
+
+        ensemble_meta = None
+        ens_file = case_dir / "model" / "model_all_rois_ensemble.joblib"
+        if ens_file.is_file():
+            try:
+                import joblib
+                ensemble_meta = joblib.load(ens_file)
+            except Exception:
+                ensemble_meta = None
+
+        return cls(profile, items, extent_slots(mask, grid.side_margin), grid, model, manifest,
+                   all_items=all_items, ensemble_meta=ensemble_meta)
+
+    def kept_items(self, extent, dropped=None, roi_mode=None):
         """Selected (slot, projection) items clipped to this image's stack extent (`dropped`: General only)."""
         from escount.features.extract import clip_items
 
-        return clip_items(self.items, extent)
+        mode = roi_mode or getattr(self, "roi_mode", "minimal")
+        chosen = self.all_items if (mode == "all" and getattr(self, "all_items", None)) else self.items
+        return clip_items(chosen, extent)
 
-    def predict(self, gray):
+    def predict(self, gray, roi_mode=None):
         """Return (rounded prediction or None, per-ROI predictions, stage timings in ms)."""
-        result = self.run(gray)
+        result = self.run(gray, roi_mode=roi_mode)
         return result["prediction"], result["per_roi"], result["timings"]
 
-    def run(self, gray):
+    def run(self, gray, roi_mode=None):
         """Timed pipeline keeping the intermediates (rotated image, kept items, feature rows)."""
         from escount.calibration.rotation_correction import rotate_image
         from escount.features.extract import roi_features
         from escount.signals.roi_bank import stack_rows
 
+        mode = roi_mode or getattr(self, "roi_mode", "minimal")
         timings, start = {}, time.perf_counter()
 
         def lap(name):
@@ -115,16 +142,16 @@ class ProjectRuntime:
         lap("rotate")
         extent, _ = stack_rows(rotated, self.ext_slots)
         dropped = []
-        kept = self.kept_items(extent, dropped)
+        kept = self.kept_items(extent, dropped, roi_mode=mode)
         lap("extent")
         rows = roi_features(rotated, kept, self.valid_x0, self.valid_width, self.grid.gaussian_sigma_ratio)
         lap("features")
         per_roi = self.roi_predictions(rows)
         lap("model")
-        prediction = self.image_prediction(per_roi)
+        prediction = self.image_prediction(per_roi, roi_mode=mode)
         lap("aggregate")
         return {"prediction": prediction, "per_roi": per_roi, "timings": timings, "rotated": rotated,
-                "extent": extent, "kept": kept, "dropped": dropped, "rows": rows}
+                "extent": extent, "kept": kept, "dropped": dropped, "rows": rows, "roi_mode": mode}
 
     def roi_predictions(self, rows):
         """Per-ROI sheet counts of feature rows (ML: period_count + predicted delta; baseline: count column)."""
@@ -158,11 +185,31 @@ class ProjectRuntime:
             return rows["period_count"].to_numpy(dtype=np.float64) + delta
         return rows[self.manifest["baseline"]["column"]].to_numpy(dtype=np.float64)
 
-    def image_prediction(self, per_roi):
-        """Rounded aggregate (median / trimmed mean) of the per-ROI predictions; None without ROIs."""
+    def image_prediction(self, per_roi, roi_mode=None):
+        """Rounded aggregate (median / trimmed mean / ensemble) of the per-ROI predictions; None without ROIs."""
+        if not per_roi.size:
+            return None
         from escount.models.train import aggregate
 
-        return int(np.rint(aggregate(per_roi, self.manifest["aggregation"]))) if per_roi.size else None
+        mode = roi_mode or getattr(self, "roi_mode", "minimal")
+        method = getattr(self, "forced_method", None) or "auto"
+
+        if mode == "all":
+            rec = (self.manifest.get("all_rois_ensemble") or {}).get("recommended", "trimmed_mean")
+            chosen = rec if method == "auto" else method
+            if chosen in ("xgboost", "ridge") and getattr(self, "ensemble_meta", None) and chosen in self.ensemble_meta:
+                from escount.models.all_rois import _ensemble_features
+                feat = _ensemble_features(per_roi.reshape(1, -1))
+                val = float(self.ensemble_meta[chosen].predict(feat)[0])
+                return int(np.rint(val))
+            elif chosen == "trimmed_mean":
+                row = np.sort(per_roi)
+                val = float(np.mean(row[1:-1])) if len(row) > 2 else float(np.mean(row))
+                return int(np.rint(val))
+            else:
+                return int(np.rint(np.median(per_roi)))
+
+        return int(np.rint(aggregate(per_roi, self.manifest["aggregation"])))
 
 
 def benchmark(case, data_root="Data", profiles_root="outputs/projects", write=True):

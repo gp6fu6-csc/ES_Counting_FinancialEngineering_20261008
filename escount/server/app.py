@@ -263,13 +263,13 @@ class ServerState:
             raise HTTPException(415, "only .png or .bmp files are accepted")
         return resolved
 
-    def run(self, engine, source, name=None, overrides=None):
+    def run(self, engine, source, name=None, overrides=None, roi_mode="minimal"):
         """engine.infer serialised by the lock, single-thread CPU; bad images -> 422."""
         from threadpoolctl import threadpool_limits
 
         try:
             with self.lock, threadpool_limits(limits=1):
-                return engine.infer(source, name=name, overrides=overrides)
+                return engine.infer(source, name=name, overrides=overrides, roi_mode=roi_mode)
         except (ValueError, IOError) as error:
             raise HTTPException(422, str(error)) from error
 
@@ -330,7 +330,8 @@ class PreviewRequest(BaseModel):
     case: str
     image: str
     model: ModelChoice = "project"
-    method: Optional[str] = "auto"    # Q7: auto / baseline / kd / macd / xgboost
+    roi_mode: Literal["minimal", "all"] = "minimal"
+    method: Optional[str] = "auto"    # Q7: auto / baseline / kd / macd / xgboost / ridge / trimmed_mean
     macd: Optional[MACDBody] = None   # None = the model's trained parameters
     kd: Optional[KDBody] = None
 
@@ -359,8 +360,9 @@ def preview_payload(engine, result, overrides):
 
     # 建立全有效範圍（非 supporter）槽位對照表，確保結果頁圖表與切片均從頂部（0 訊號）畫到底部 (PDF P.8 & P.10)
     items_by_key = {}
-    if hasattr(engine, "runtime") and hasattr(engine.runtime, "items"):
-        for s, proj in engine.runtime.items:
+    candidate_items = engine.runtime.all_items if (result.get("roi_mode") == "all" and getattr(engine.runtime, "all_items", None)) else getattr(engine.runtime, "items", [])
+    if hasattr(engine, "runtime"):
+        for s, proj in candidate_items:
             items_by_key[(s.x, s.w, proj)] = s
 
     for roi, panel in zip(result["rois"], engine._signals(result)):
@@ -398,7 +400,7 @@ def preview_payload(engine, result, overrides):
                      "highs": [int(i) for i in high_idx], "lows": [int(i) for i in low_idx],
                      "label": panel["label"], "slice_image": slice_b64, **charts})
     record = {key: result[key] for key in ("image", "case", "model", "model_case", "method", "model_type", "N_pred",
-                                           "gt", "hit", "timings_ms")}
+                                           "gt", "hit", "timings_ms", "roi_mode", "all_rois_ensemble") if key in result}
     marks = engine.marks
     return jsonable({**record, "params": params, "marks": {"name": marks.name, "params": asdict(marks.params),
                                                            "gate": marks.gate}, "rois": rois})
@@ -600,15 +602,17 @@ def create_app(config=ServerConfig()):
             engine.runtime.forced_method = body.method
         else:
             engine.runtime.forced_method = None
+        engine.runtime.roi_mode = body.roi_mode
         path = state.case_image(body.case, body.image)
         overrides = {}
         if body.macd:
             overrides["macd"] = MACDParams(**body.macd.model_dump())
         if body.kd:
             overrides["kd"] = KDParams(**body.kd.model_dump())
-        result = state.run(engine, path, overrides=overrides or None)
+        result = state.run(engine, path, overrides=overrides or None, roi_mode=body.roi_mode)
         if body.method and body.method != "auto":
             result["method"] = body.method
+        result["roi_mode"] = body.roi_mode
         return preview_payload(engine, result, overrides)
 
     # ---- training page: run the CLI steps (prepare -> train -> select-rois -> infer) as one background job
@@ -621,9 +625,12 @@ def create_app(config=ServerConfig()):
     def step_status(case):
         model_manifest = state.profiles_root / case / "model" / "manifest.json"
         selected = False
+        all_rois = False
         if model_manifest.is_file():
             try:
-                selected = bool(json.loads(model_manifest.read_text(encoding="utf-8")).get("selected_rois"))
+                m_info = json.loads(model_manifest.read_text(encoding="utf-8"))
+                selected = bool(m_info.get("selected_rois"))
+                all_rois = bool(m_info.get("all_rois"))
             except (OSError, ValueError):
                 selected = False
         results = Path(config.results_root) / case
@@ -631,6 +638,7 @@ def create_app(config=ServerConfig()):
                 "prepare": (Path(config.features_root) / case / "features.parquet").is_file(),
                 "train": model_manifest.is_file(),
                 "select": selected,
+                "all_rois": all_rois,
                 "infer": (results / "predictions.csv").is_file()}
 
     def run_job(case, step, args):
@@ -647,7 +655,7 @@ def create_app(config=ServerConfig()):
         except OSError as error:
             job["log"].append(f"cannot start: {error}")
             job["returncode"] = -1
-        if step in ("train", "select"):
+        if step in ("train", "select", "all_rois"):
             state.unload(case)                            # next preview / infer loads the new model
         job["status"] = "done" if job["returncode"] == 0 else "failed"
 
@@ -657,7 +665,7 @@ def create_app(config=ServerConfig()):
         return {"case": case, "steps": step_status(case), "job": job}
 
     class TrainRequest(BaseModel):
-        step: Literal["prepare", "train", "select", "infer"]
+        step: Literal["prepare", "train", "select", "all_rois", "infer"]
         device: Literal["cuda", "cpu"] = "cuda"
 
     @app.post("/training/{case}/run")
@@ -665,12 +673,16 @@ def create_app(config=ServerConfig()):
         folder = state.case_dir(case)
         steps = step_status(case)
         order = ["calibrate", "prepare", "train", "select", "infer"]
-        missing = [s for s in order[:order.index(body.step)] if not steps[s]]
+        if body.step == "all_rois":
+            missing = [s for s in ["calibrate", "prepare", "train"] if not steps[s]]
+        else:
+            missing = [s for s in order[:order.index(body.step)] if not steps[s]]
         if missing:
             raise HTTPException(409, f"請先完成前面的步驟：{', '.join(missing)}")
         args = {"prepare": ["prepare", "--project", case],
                 "train": ["train", "--project", case, "--device", body.device],
                 "select": ["select-rois", "--project", case],
+                "all_rois": ["all-rois", "--project", case],
                 "infer": ["infer", "--project", case, "--input", str(folder),
                           "--output", str(Path(config.results_root) / case)]}[body.step]
         with job_lock:

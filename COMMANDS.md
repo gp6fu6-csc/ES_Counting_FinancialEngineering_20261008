@@ -15,12 +15,18 @@ uv run escount serve --host 127.0.0.1 --port 8000
 開啟瀏覽器訪問以下頁面：
 * **訓練與部署引導頁**：`http://localhost:8000/ui/training.html`
   * 選擇資料夾（如 `x05_unpress`）與訓練裝置（CUDA 或 CPU）。
-  * 依照畫面提示依序按下按鈕：**0. 校正 $\to$ 1. 建立特徵 $\to$ 2. 訓練模型 $\to$ 3. 挑選 ROI $\to$ 4. 分析全部**。
+  * 依照畫面提示依序按下按鈕：**0. 校正 $\to$ 1. 建立特徵 $\to$ 2. 訓練模型 $\to$ 3. 挑選 ROI 與建立全部 ROI 整合模型 $\to$ 4. 分析全部**。
+  * **步驟 3 支援雙軌模式**：可一鍵同時完成「最少 ROI 挑選」與「全部 ROI 機器學習整合模型」，亦提供獨立子按鈕「僅建立全部 ROI 整合模型 (all-rois)」。
 * **旋轉校正頁**：`http://localhost:8000/ui/calibration.html`
-  * 檢視 3 個定位方塊與 FFT 旋轉角度補償，微調後點選「儲存校正結果」。
+  * 檢視 3 個定位方塊與 FFT 旋轉角度補償，調整計片條帶參數（如條帶數量 $N=10$、寬度 $w$、間距 $D$），點選「儲存 project.json」。
 * **推論結果檢視頁**：`http://localhost:8000/ui/results.html`
   * 點擊影像清單切換檢視；
-  * **★ 功能拓展需求選單**：右上角可即時切換預測模型（`baseline`、`kd`、`macd`、`xgboost`、`auto`），立即動態更新片數；
+  * **ROI 方案下拉選單**：可即時切換「最少 ROI」與「全部 ROI」方案。
+    * **最少 ROI (Minimal)**：載入演算法挑選之精簡組合（如 2 組，顯示 `ROI N1 / 2`），兼顧極速推論與高精度。
+    * **全部 ROI (All Strips)**：載入校正頁所設計之全部 $N$ 組條帶（如 10 組，顯示 `ROI N1 / 10`），支援點擊 ◀ ▶ 巡覽 $N_1 \sim N_{10}$ 每一條帶之切片、波形與個別預測值。
+  * **★ 功能拓展需求選單**：
+    * 最少 ROI 模式：可切換 `Auto`、`Baseline`、`KD`、`MACD`、`XGBoost`；
+    * 全部 ROI 模式：導入第二階段多條帶 ML 整合技術（Stacking Ensemble），可切換 `Auto (系統推薦最佳方案)`、`XGBoost 多 ROI 智能整合`、`Ridge 空間加權整合`、`去極值平均 (Trimmed Mean)` 與各單項指標；
   * **切片與訊號對齊**：上方顯示旋轉後橫置真實鋼片切片，垂直貫穿十字游標與下方 ECharts 訊號 1:1 像素對齊，支援滾輪同步局部縮放。
 
 ---
@@ -53,22 +59,30 @@ uv run escount train --project x05_unpress --device cuda
 uv run escount train --general --device cuda
 ```
 
-### 步驟 3：最小 ROI 集合挑選 (Select-ROIs)
+### 步驟 3：最小 ROI 集合挑選與全 ROI 整合模型訓練 (Select-ROIs & All-ROIs)
 ```powershell
+# 同時執行最小 ROI 貪婪挑選與全部條帶 ML 整合模型訓練（推薦）：
 uv run escount select-rois --project x05_unpress --max-rois 25
 # 參數：
-#   --max-rois 25         : 最大挑選條帶數量上限（通常選出 3~8 條）
+#   --max-rois 25         : 最大挑選條帶數量上限（通常選出 2~8 條）
+
+# 若只需單獨更新全部條帶之多 ROI ML 整合模型（All-ROIs Stacking）：
+uv run escount all-rois --project x05_unpress
 ```
 
 ### 步驟 4：正式推論 (Infer CLI)
 ```powershell
-# 單張影像推論（指定專案與預測方案）
+# 單張影像推論（預設最小 ROI 集合）：
 uv run escount infer --project x05_unpress --input Data/x05_unpress/test2.png --method auto --output outputs/infer
+
+# 指定使用「全部 ROI 模式」並透過 ML 整合輸出最終片數：
+uv run escount infer --project x05_unpress --input Data/x05_unpress/test2.png --roi-mode all --method auto --output outputs/infer
 
 # 常用參數：
 #   --project <專案名>     : 專案名稱 (如 x05_unpress)
 #   --input <檔案或目錄>   : 輸入待分析影像或資料夾
-#   --method <方案>        : 自由切換預測方案: auto / baseline / kd / macd / xgboost (預設 auto)
+#   --roi-mode <方案>      : minimal (最少 ROI，預設) 或 all (校正條帶全部 ROI)
+#   --method <方案>        : 預測/整合方案: auto / baseline / kd / macd / xgboost / ridge / trimmed_mean (預設 auto)
 #   --model <模型範疇>     : project (專案模型) 或 general (跨專案聯合通用模型)
 #   --output <輸出目錄>    : 結果輸出資料夾 (輸出 predictions.csv, analysis.png, result.json 等)
 ```
@@ -133,7 +147,40 @@ print(f"MACD指標預測片數: {res_macd['N_pred']}")
 print(f"XGBoost 預測片數: {res_xgb['N_pred']}")
 ```
 
-### 3.3 切換「特化專案模型」vs「跨專案聯合通用模型 (General Model)」
+### 3.3 切換「最少 ROI」vs「全部 ROI」雙軌方案 (Dual ROI Modes & ML Ensembles)
+推論時可直接透過 `roi_mode="all"` 與指定整合演算法進行推論：
+```python
+from escount.inference.engine import InferenceEngine
+
+engine = InferenceEngine.load("x05_unpress")
+image_path = "Data/x05_unpress/test2.png"
+
+# 【方案 A：最少 ROI 模式】(Minimal ROIs: 部署由演算法精選的少數互補條帶，推論速度極快)
+res_min = engine.infer(image_path, roi_mode="minimal", method="auto")
+print(f"最少 ROI 預測片數: {res_min['N_pred']} (使用 {len(res_min['rois'])} 組精選條帶)")
+
+# 【方案 B：全部 ROI 模式 + ML 智能整合】(All ROIs: 涵蓋校正頁全部 N 組條帶，並以第二階段 ML 整合各條帶結果)
+res_all_auto = engine.infer(image_path, roi_mode="all", method="auto")
+print(f"全部 ROI 自動最佳預測: {res_all_auto['N_pred']} (分析全部 {len(res_all_auto['rois'])} 組條帶)")
+
+# 【方案 C：全部 ROI 模式 + 強制使用 XGBoost 智能整合】
+res_all_xgb = engine.infer(image_path, roi_mode="all", method="xgboost")
+print(f"全部 ROI XGBoost 整合: {res_all_xgb['N_pred']}")
+
+# 【方案 D：全部 ROI 模式 + 強制使用 Ridge 空間加權整合】
+res_all_ridge = engine.infer(image_path, roi_mode="all", method="ridge")
+print(f"全部 ROI Ridge 加權整合: {res_all_ridge['N_pred']}")
+
+# 【方案 E：全部 ROI 模式 + 統計中位數整合】
+res_all_med = engine.infer(image_path, roi_mode="all", method="baseline")
+print(f"全部 ROI 中位數整合:   {res_all_med['N_pred']}")
+
+# 可巡覽各個條帶獨立算出的預測值：
+for roi in res_all_auto["rois"]:
+    print(f"  條帶 N{roi['index']} ({roi['key']}): 預測 {roi['prediction']:.2f} 片")
+```
+
+### 3.4 切換「特化專案模型」vs「跨專案聯合通用模型 (General Model)」
 在 `InferenceEngine.load()` 時指定 `model` 參數：
 ```python
 from escount.inference.engine import InferenceEngine
@@ -150,7 +197,7 @@ print(f"專案特化預測: {res_proj['N_pred']} 片")
 print(f"跨專案通用預測: {res_gen['N_pred']} 片")
 ```
 
-### 3.4 動態即時調整技術指標參數（無需重新訓練）
+### 3.5 動態即時調整技術指標參數（無需重新訓練）
 推論時可直接透過 `overrides` 參數動態覆蓋 KD 或 MACD 的計算週期：
 ```python
 from escount.indicators.core import KDParams, MACDParams
@@ -170,7 +217,7 @@ res_custom = engine.infer(
 print(f"自訂指標參數預測結果: {res_custom['N_pred']} 片 (耗時: {res_custom['timings_ms']['total']:.1f} ms)")
 ```
 
-### 3.5 批量推論並輸出檔案 (Run Batch)
+### 3.6 批量推論並輸出檔案 (Run Batch)
 ```python
 from escount.inference.engine import InferenceEngine, OutputOptions
 

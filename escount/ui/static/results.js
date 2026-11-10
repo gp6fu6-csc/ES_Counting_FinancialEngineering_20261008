@@ -32,7 +32,8 @@ const line = (name, data, color, extra = {}) =>
 Vue.createApp({
   data() {
     return {
-      apiKey: ESC.apiKey(), projects: [], caseId: "", models: [], model: "project", methodChoice: "auto", images: [], image: "",
+      apiKey: ESC.apiKey(), projects: [], caseId: "", models: [], model: "project", roiMode: "minimal",
+      recommendedEnsemble: "", methodChoice: "auto", images: [], image: "",
       macd: { ema1: 2, ema2: 4, dea: 2 }, kd: { n: 4, k: 2, d: 2 }, overridden: false,
       result: null, roiIndex: 0, error: "", loading: false, requestId: 0, zoomKey: "",
       zoomRange: { start: 0, end: 100 },
@@ -179,6 +180,7 @@ Vue.createApp({
       } catch (e) { this.error = e.message; }
     },
     modelChanged() { this.overridden = false; this.roiIndex = 0; this.preview(); },   // trained params of the model
+    roiModeChanged() { this.roiIndex = 0; this.preview(); },
     selectImage(name) { this.image = name; this.roiIndex = 0; this.preview(); },       // first ROI group by default
     edited() { this.overridden = true; this.schedule(); },
     resetParams() { this.overridden = false; this.preview(); },
@@ -190,13 +192,16 @@ Vue.createApp({
     async preview() {
       if (!this.caseId || !this.image) return;
       const id = ++this.requestId;
-      const body = { case: this.caseId, image: this.image, model: this.model, method: this.methodChoice };
+      const body = { case: this.caseId, image: this.image, model: this.model, roi_mode: this.roiMode, method: this.methodChoice };
       if (this.overridden) Object.assign(body, { macd: { ...this.macd }, kd: { ...this.kd } });
       this.loading = true;
       try {
         const result = await ESC.api("/preview", { json: body });
         if (id !== this.requestId) return;                       // a newer request superseded this one
         this.result = result; this.error = "";
+        if (result.all_rois_ensemble && result.all_rois_ensemble.recommended) {
+          this.recommendedEnsemble = result.all_rois_ensemble.recommended;
+        }
         if (!this.overridden) {                                  // show the model's trained parameters
           const { ema1, ema2, dea } = result.params.macd; this.macd = { ema1, ema2, dea };
           const { n, k, d } = result.params.kd; this.kd = { n, k, d };

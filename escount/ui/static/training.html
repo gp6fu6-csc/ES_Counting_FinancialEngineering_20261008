@@ -49,6 +49,14 @@
             <button>前往校正頁</button></a>
           <a v-else-if="s.key === 'results'" :href="'/ui/results.html?case=' + encodeURIComponent(caseId)">
             <button :disabled="!status.select">前往結果頁</button></a>
+          <div v-else-if="s.key === 'select'" style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button @click="run('select')" :disabled="!canRun('select')">
+              {{ status.select ? '重新執行' : '執行' }} 步驟 3 (挑選最少 ROI + 建立全部 ROI 模型)
+            </button>
+            <button style="background: #2a2e3d; border-color: #4a5568;" @click="run('all_rois')" :disabled="!canRun('all_rois')">
+              僅建立全部 ROI 整合模型 (all-rois)
+            </button>
+          </div>
           <button v-else @click="run(s.key)" :disabled="!canRun(s.key)">
             {{ status[s.key] ? '重新執行' : '執行' }}{{ s.title }}</button>
         </li>

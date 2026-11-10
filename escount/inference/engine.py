@@ -63,7 +63,7 @@ class GeneralRuntime(ProjectRuntime):
                          model, manifest)
         self.units = units
 
-    def kept_items(self, extent, dropped=None):
+    def kept_items(self, extent, dropped=None, **kwargs):
         """Nearest strip of each unit's bin; a strip overlapping an earlier kept one by >= w/3 is dropped
         and recorded in `dropped` (result.json `dropped_rois`), since the model was evaluated with it."""
         kept = []
@@ -226,15 +226,18 @@ class InferenceEngine:
             rows[f"{column}_up"], rows[f"{column}_down"], rows[f"{column}_both"] = up, down, (up + down) / 2.0
         return rows
 
-    def infer(self, source, name=None, overrides=None, method=None):
+    def infer(self, source, name=None, overrides=None, method=None, roi_mode="minimal"):
         """N_pred of one image (uint8 gray array or file path). Returns a result dict (see module doc).
 
         `overrides` ({"macd": MACDParams, "kd": KDParams}) recomputes those indicator features before
         the model (results page live preview); None = the trained parameters.
-        `method`: 'auto', 'baseline', 'kd', 'macd', or 'xgboost' (forces prediction method).
+        `method`: 'auto', 'baseline', 'kd', 'macd', 'xgboost', 'ridge', or 'trimmed_mean'.
+        `roi_mode`: 'minimal' (selected_rois) or 'all' (all_rois).
         """
         if method is not None:
             self.runtime.forced_method = method if method != "auto" else None
+        if roi_mode is not None:
+            self.runtime.roi_mode = roi_mode
         timings = {}
         if isinstance(source, np.ndarray):
             gray, path = source, None
@@ -249,14 +252,14 @@ class InferenceEngine:
             raise ValueError(f"expected a single-channel uint8 image, got {gray.shape} {gray.dtype}")
         if self.image_shape and gray.shape != self.image_shape:
             raise ValueError(f"image size {gray.shape} differs from the project's {self.image_shape}")
-        run = self.runtime.run(gray)
+        run = self.runtime.run(gray, roi_mode=roi_mode)
         timings.update(run["timings"])
         rows, per_roi, prediction = run["rows"], run["per_roi"], run["prediction"]
         if overrides:
             start = time.perf_counter()
             rows = self.override_rows(rows, run["kept"], run["rotated"], overrides)
             per_roi = self.runtime.roi_predictions(rows)
-            prediction = self.runtime.image_prediction(per_roi)
+            prediction = self.runtime.image_prediction(per_roi, roi_mode=roi_mode)
             timings["override"] = 1000.0 * (time.perf_counter() - start)
         timings["total"] = sum(timings.values())
         order = {f"{method}|{slot.w}|{slot.x}": index for index, (slot, method) in enumerate(run["kept"])}
@@ -278,7 +281,8 @@ class InferenceEngine:
                 "method": self.runtime.manifest["method"], "model_type": self.runtime.manifest["model_type"],
                 "N_pred": prediction, "gt": gt["count"] if gt else None,
                 "hit": (prediction == gt["count"]) if gt else None, "rois": rois,
-                "dropped_rois": run["dropped"], "timings_ms": timings,
+                "dropped_rois": run["dropped"], "timings_ms": timings, "roi_mode": roi_mode,
+                "all_rois_ensemble": self.runtime.manifest.get("all_rois_ensemble"),
                 "source_sha256_before": sha_before, "rotated": run["rotated"], "_gray": gray}
 
     def _signals(self, result):
@@ -344,7 +348,7 @@ class InferenceEngine:
         record.update(outputs=list(outputs), dpi=options.dpi if options.analysis_plot else None)
         return record
 
-    def run(self, source, out_dir, options=OutputOptions(), method=None):
+    def run(self, source, out_dir, options=OutputOptions(), method=None, roi_mode="minimal"):
         """Infer a file or folder; per-image outputs + <out_dir>/predictions.csv. Returns result dicts."""
         if method is not None:
             self.runtime.forced_method = method if method != "auto" else None
@@ -356,7 +360,7 @@ class InferenceEngine:
         out_dir.mkdir(parents=True, exist_ok=True)
         results, records = [], []
         for path in paths:
-            result = self.infer(path)
+            result = self.infer(path, roi_mode=roi_mode)
             self.write_outputs(result, out_dir / path.stem, options)
             results.append(result)
             records.append({"image": result["image"], "GT": result["gt"], "N_pred": result["N_pred"],
