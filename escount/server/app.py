@@ -447,7 +447,10 @@ def create_app(config=ServerConfig()):
             supplied = request.headers.get(API_KEY_HEADER, "")
             if not secrets.compare_digest(supplied.encode("utf-8"), config.api_key.encode("utf-8")):
                 return JSONResponse({"detail": f"missing or invalid {API_KEY_HEADER} header"}, status_code=401)
-        return await call_next(request)
+        response = await call_next(request)
+        if request.url.path.startswith("/ui/"):
+            response.headers["Cache-Control"] = "no-cache"   # revalidate (ETag) so UI updates are never stale
+        return response
 
     @app.get("/", include_in_schema=False)
     def root():

@@ -79,7 +79,7 @@ Vue.createApp({
     },
 
     async preview() {
-      if (!this.loadedReference || !this.hasMask || this.maskEditing) return;
+      if (!this.loadedReference || !this.hasMask || this.maskEditing || !this.rois.length) return;
       const id = ++this.requestId;
       try {
         const result = await ESC.api("/calibration/preview", { json: { case: this.caseId, ...this.body() } });
