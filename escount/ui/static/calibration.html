@@ -40,15 +40,23 @@
 
     <section class="panel stage" aria-label="影像與 ROI">
       <div class="tabs" role="tablist">
+        <button role="tab" :aria-selected="tab === 'mask'" :class="{ active: tab === 'mask' }"
+                @click="setTab('mask')">(0) 背景 BW 確認</button>
         <button role="tab" :aria-selected="tab === 'rotation'" :class="{ active: tab === 'rotation' }"
                 @click="setTab('rotation')">(a) 旋轉校正 ROI</button>
         <button role="tab" :aria-selected="tab === 'strips'" :class="{ active: tab === 'strips' }"
                 @click="setTab('strips')">(b) 計片條帶</button>
       </div>
       <canvas ref="canvas" tabindex="0" width="1224" height="1024"
-              :aria-label="tab === 'rotation' ? '參考影像與旋轉校正 ROI，可拖曳或用方向鍵移動選取的 ROI' : '轉正影像與計片條帶，左右方向鍵調整水平位移'"
-              @mousedown="onDown" @mousemove="onMove" @mouseup="onUp" @mouseleave="onUp" @keydown="onKey"></canvas>
-      <p class="hint" v-if="tab === 'rotation'">滑鼠拖曳 ROI；點選後按方向鍵依「位移量」移動。綠框 = 有效區域，橘線 = 有效區中線。</p>
+              :aria-label="tab === 'mask' ? '參考影像與有效區域遮罩，圈選模式下左鍵加節點、右鍵取消上一節點、左鍵連點兩下確定' : tab === 'rotation' ? '參考影像與旋轉校正 ROI，可拖曳或用方向鍵移動選取的 ROI' : '轉正影像與計片條帶，左右方向鍵調整水平位移'"
+              @mousedown="onDown" @mousemove="onMove" @mouseup="onUp" @mouseleave="onUp" @keydown="onKey"
+              @dblclick="onDouble" @contextmenu.prevent="onRight"></canvas>
+      <p class="hint" v-if="tab === 'mask'">
+        <template v-if="maskEditing">圈選有效區域：左鍵 = 新增節點；右鍵 = 取消上一個節點；左鍵連點兩下 = 確定範圍（至少 3 點）。多邊形內為有效區（存為黑色），外側為白色。</template>
+        <template v-else-if="hasMask">透明紅色 = 目前 background_BW.png 的有效區域。確認無誤可直接切到下一步，或按「重新圈選」修正。</template>
+        <template v-else>此資料夾尚無 background_BW.png，請按「開始圈選」建立。</template>
+      </p>
+      <p class="hint" v-else-if="tab === 'rotation'">滑鼠拖曳 ROI；點選後按方向鍵依「位移量」移動。綠框 = 有效區域，橘線 = 有效區中線。</p>
       <p class="hint" v-else>顯示依預覽角度轉正後的影像；黃色 = 計片條帶，紫線 = 堆疊範圍。←/→ 依「位移量」調整水平位移。</p>
     </section>
 
@@ -56,7 +64,17 @@
       <label class="field"><span>位移量 (Pixel)</span>
         <input type="number" min="1" max="500" v-model.number="step">
       </label>
-      <template v-if="tab === 'rotation'">
+      <template v-if="tab === 'mask'">
+        <p class="legend">狀態：{{ hasMask ? '已有 background_BW.png' : '尚無 background_BW.png' }}</p>
+        <button class="primary" :disabled="!loadedReference || busy" @click="startMask">{{ hasMask ? '重新圈選' : '開始圈選' }}</button>
+        <template v-if="maskEditing">
+          <p class="legend">節點數：{{ maskPoints.length }}　{{ maskClosed ? '（已確定範圍）' : '（尚未確定）' }}</p>
+          <button :disabled="!maskPoints.length" @click="onRight">取消上一個節點</button>
+          <button :disabled="!maskClosed || busy" class="primary" @click="saveMask">儲存 background_BW.png</button>
+          <button v-if="hasMask" @click="cancelMask">取消修改</button>
+        </template>
+      </template>
+      <template v-else-if="tab === 'rotation'">
         <label class="field"><span>ROI 邊長 (≥ {{ minSide }} px，全部 ROI)</span>
           <input type="number" :min="minSide" step="2" v-model.number="side" @change="applySide">
         </label>
@@ -86,8 +104,8 @@
       </template>
 
       <div class="actions">
-        <button class="primary" :disabled="!loadedReference || busy" @click="preview">預覽</button>
-        <button :disabled="!loadedReference || busy" @click="save">儲存 project.json</button>
+        <button class="primary" :disabled="!loadedReference || busy || !hasMask || maskEditing" @click="preview">預覽</button>
+        <button :disabled="!loadedReference || busy || !hasMask || maskEditing" @click="save">儲存 project.json</button>
       </div>
       <div class="result" v-if="result" aria-live="polite">
         <dl>

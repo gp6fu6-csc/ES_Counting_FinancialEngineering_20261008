@@ -45,7 +45,7 @@ from escount.calibration.calibrate import (
     PROFILE_NAME, CalibrationConfig, CalibrationQualityError, ProjectProfile, SquareRoi, calibrate_project,
     default_rois, estimate_angle, evaluate_angle, validate_rois, valid_region_info,
 )
-from escount.calibration.rotation_correction import rotate_image
+from escount.calibration.rotation_correction import normalize_mask, rotate_image
 from escount.es_counting import list_images, pick_reference, read_gray, read_mask
 from escount.inference.engine import InferenceEngine
 from escount.signals.roi_bank import MIN_SIDE_MARGIN, build_roi_bank, check_geometry, stack_rows
@@ -165,15 +165,15 @@ class ServerState:
 
         return case_ids(self.data_root) if self.data_root.is_dir() else []
 
-    def case_dir(self, case):
+    def case_dir(self, case, need_mask=True):
         folder = self.data_root / check_case(case)
-        if not folder.is_dir() or not (folder / "background_BW.png").is_file():
+        if not folder.is_dir() or (need_mask and not (folder / "background_BW.png").is_file()):
             raise HTTPException(404, f"project folder {case!r} with background_BW.png not found")
         return folder
 
     def case_image(self, case, name):
         """Path of an analysable image of the case (background files are never served)."""
-        images = {path.name: path for path in list_images(self.case_dir(case))}
+        images = {path.name: path for path in list_images(self.case_dir(case, need_mask=False))}
         if name not in images:
             raise HTTPException(404, f"image {name!r} not found in project {case!r}")
         return images[name]
@@ -312,6 +312,11 @@ class CalibrationBody(BaseModel):
 
 class PreviewCalibrationRequest(CalibrationBody):
     case: str
+
+
+class MaskBody(BaseModel):
+    """Valid-region polygon in full-resolution image pixels (x, y), at least 3 vertices."""
+    points: list[tuple[float, float]] = Field(min_length=3, max_length=2000)
 
 
 class MACDBody(BaseModel):
@@ -497,27 +502,41 @@ def create_app(config=ServerConfig()):
     # ------------------------------------------------------------ calibration page (Task 11, PDF p12)
     @app.get("/calibration/cases")
     def calibration_cases():
-        return {"cases": state.cases()}
+        # folders without background_BW.png are listed too, so the mask can be drawn on the calibration page
+        folders = sorted(p.name for p in state.data_root.iterdir()
+                         if p.is_dir() and ((p / "background_BW.png").is_file() or list_images(p))) \
+            if state.data_root.is_dir() else []
+        return {"cases": folders}
 
     @app.get("/calibration/{case}/images")
     def calibration_images(case: str):
-        case_dir = state.case_dir(case)
+        case_dir = state.case_dir(case, need_mask=False)
         paths = list_images(case_dir)
-        _, mask = read_mask(case_dir)
-        try:
-            defaults = [asdict(roi) for roi in default_rois(mask)]
-        except ValueError:
-            defaults = []
+        has_mask = (case_dir / "background_BW.png").is_file()
         try:
             reference = pick_reference(paths).name
         except ValueError:
             reference = paths[0].name if paths else None
+        if has_mask:
+            _, mask = read_mask(case_dir)
+            image_size = {"width": int(mask.shape[1]), "height": int(mask.shape[0])}
+            region = valid_region_info(mask)
+            try:
+                defaults = [asdict(roi) for roi in default_rois(mask)]
+            except ValueError:
+                defaults = []
+        else:                                     # no mask yet: size from the reference image, ROIs wait for the mask
+            if reference is None:
+                raise HTTPException(404, f"project folder {case!r} has no analysable image")
+            shape = read_gray(case_dir / reference).shape
+            image_size, region, defaults = {"width": int(shape[1]), "height": int(shape[0])}, None, []
         profile_path = state.profiles_root / case / PROFILE_NAME
         profile = json.loads(ProjectProfile.load(profile_path).to_json()) if profile_path.is_file() else None
         config = CalibrationConfig()
         return jsonable({"case": case, "images": [path.name for path in paths], "reference": reference,
-                         "image_size": {"width": int(mask.shape[1]), "height": int(mask.shape[0])},
-                         "valid_region": valid_region_info(mask), "default_rois": defaults,
+                         "has_mask": has_mask,
+                         "image_size": image_size,
+                         "valid_region": region, "default_rois": defaults,
                          "min_side": config.min_side, "default_side": config.roi_side,
                          "min_side_margin": MIN_SIDE_MARGIN,
                          "strips": (profile or {}).get("strip_params") or DEFAULT_STRIPS, "profile": profile})
@@ -538,6 +557,62 @@ def create_app(config=ServerConfig()):
         if not ok:
             raise HTTPException(500, "could not encode PNG")
         return Response(encoded.tobytes(), media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.get("/calibration/{case}/mask-overlay/{name}", response_class=Response,
+             responses={200: {"content": {"image/png": {}}}})
+    def calibration_mask_overlay(case: str, name: str, max_width: int = 1224):
+        """Project image with the valid region (black in background_BW.png) tinted transparent red."""
+        if not 64 <= max_width <= 8192:
+            raise HTTPException(422, "max_width must be in [64, 8192]")
+        case_dir = state.case_dir(case)
+        image = read_gray(state.case_image(case, name))
+        _, mask = read_mask(case_dir)
+        valid = normalize_mask(mask)
+        if valid.shape != image.shape:
+            raise HTTPException(422, f"mask {valid.shape} and image {image.shape} sizes differ")
+        colour = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        red = np.zeros_like(colour)
+        red[:, :] = (0, 0, 255)
+        colour[valid] = cv2.addWeighted(colour, 0.6, red, 0.4, 0)[valid]
+        scale = min(1.0, max_width / colour.shape[1])
+        if scale < 1.0:
+            colour = cv2.resize(colour, (max_width, max(1, round(colour.shape[0] * scale))),
+                                interpolation=cv2.INTER_AREA)
+        ok, encoded = cv2.imencode(".png", colour)
+        if not ok:
+            raise HTTPException(500, "could not encode PNG")
+        return Response(encoded.tobytes(), media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.post("/calibration/{case}/mask")
+    def calibration_mask_save(case: str, body: MaskBody):
+        """Rasterise the polygon (inside = valid = black 0, outside = white 255) into background_BW.png.
+
+        An existing mask is first copied to <profiles_root>/<case>/background_BW.prev.png.
+        """
+        from escount.calibration.rotation_correction import write_image
+
+        case_dir = state.case_dir(case, need_mask=False)
+        paths = list_images(case_dir)
+        if not paths:
+            raise HTTPException(404, f"project folder {case!r} has no analysable image")
+        height, width = read_gray(paths[0]).shape
+        points = np.array(body.points, dtype=np.float64)
+        if (points[:, 0] < -0.5).any() or (points[:, 1] < -0.5).any() \
+                or (points[:, 0] > width - 0.5).any() or (points[:, 1] > height - 0.5).any():
+            raise HTTPException(422, f"polygon vertices must lie inside the {width}x{height} image")
+        mask = np.full((height, width, 3), 255, dtype=np.uint8)
+        cv2.fillPoly(mask, [np.round(points).astype(np.int32)], (0, 0, 0))
+        if not (mask[:, :, 0] < 128).any():
+            raise HTTPException(422, "polygon encloses no pixel")
+        target = case_dir / "background_BW.png"
+        if target.is_file():
+            backup = state.profiles_root / case / "background_BW.prev.png"
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            backup.write_bytes(target.read_bytes())
+        write_image(target, mask)
+        state.unload(case)                        # geometry changed
+        return {"saved": True, "path": str(target.resolve()),
+                "note": "background_BW.png updated: re-run rotation calibration, prepare, train and select-rois"}
 
     @app.post("/calibration/preview")
     def calibration_preview(body: PreviewCalibrationRequest):

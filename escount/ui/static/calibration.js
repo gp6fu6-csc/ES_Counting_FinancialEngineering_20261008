@@ -3,7 +3,7 @@
 const MAX_WIDTH = 1224;           // downscaled preview width (px)
 const COLORS = { valid: "#26a69a", centre: "#ff9f43", roi: "#4c8dff", selected: "#f0b90b",
                  strip: "rgba(240, 185, 11, 0.35)", stripLine: "#f0b90b", stack: "#d16ff0" };
-const images = { original: null, rotated: null, rotatedAngle: null };   // bitmaps kept out of Vue reactivity
+const images = { original: null, rotated: null, rotatedAngle: null, overlay: null };   // bitmaps kept out of Vue reactivity
 
 Vue.createApp({
   data() {
@@ -12,7 +12,8 @@ Vue.createApp({
       imageSize: { width: 0, height: 0 }, validRegion: null, defaultRois: [], minSide: 300, minMargin: 50,
       rois: [], selected: 1, side: 384, step: 10,
       strips: { n: 4, w: 16, pitch: 30, side_margin: 50, x_offset: 0 },
-      tab: "rotation", result: null, error: "", message: "", busy: false, drag: null, requestId: 0,
+      tab: "mask", result: null, error: "", message: "", busy: false, drag: null, requestId: 0,
+      hasMask: false, maskEditing: false, maskPoints: [], maskClosed: false, hover: null,
     };
   },
   watch: {
@@ -33,9 +34,11 @@ Vue.createApp({
     saveKey() { ESC.setApiKey(this.apiKey); },
 
     async loadCase() {
-      this.error = this.message = ""; this.result = null; images.original = images.rotated = null;
+      this.error = this.message = ""; this.result = null; images.original = images.rotated = images.overlay = null;
+      this.maskPoints = []; this.maskClosed = false; this.hover = null;
       try {
         const info = await ESC.api(`/calibration/${encodeURIComponent(this.caseId)}/images`);
+        this.hasMask = info.has_mask; this.maskEditing = !info.has_mask;
         Object.assign(this, { images: info.images, imageSize: info.image_size, validRegion: info.valid_region,
           defaultRois: info.default_rois, minSide: info.min_side, minMargin: info.min_side_margin,
           strips: Object.assign({}, info.strips) });
@@ -53,10 +56,15 @@ Vue.createApp({
       this.error = ""; this.busy = true;
       try {
         images.original = await ESC.bitmap(this.imageUrl(0));
-        images.rotated = null; images.rotatedAngle = null;
+        images.rotated = null; images.rotatedAngle = null; images.overlay = null;
         this.loadedReference = this.reference;
+        if (this.hasMask) {
+          const name = encodeURIComponent(this.reference);
+          images.overlay = await ESC.bitmap(
+            `/calibration/${encodeURIComponent(this.caseId)}/mask-overlay/${name}?max_width=${MAX_WIDTH}`);
+        }
         this.draw();
-        await this.preview();
+        if (this.hasMask) await this.preview();
       } catch (e) { this.error = e.message; } finally { this.busy = false; }
     },
 
@@ -71,7 +79,7 @@ Vue.createApp({
     },
 
     async preview() {
-      if (!this.loadedReference) return;
+      if (!this.loadedReference || !this.hasMask || this.maskEditing) return;
       const id = ++this.requestId;
       try {
         const result = await ESC.api("/calibration/preview", { json: { case: this.caseId, ...this.body() } });
@@ -130,8 +138,39 @@ Vue.createApp({
       return { x: (event.clientX - rect.left) / rect.width * this.imageSize.width,
                y: (event.clientY - rect.top) / rect.height * this.imageSize.height };
     },
+    // ---- background_BW polygon: left click = node, right click = undo last node, double left click = confirm
+    startMask() { this.maskEditing = true; this.maskPoints = []; this.maskClosed = false; this.message = ""; this.draw(); },
+    cancelMask() { this.maskEditing = false; this.maskPoints = []; this.maskClosed = false; this.draw(); },
+    onDouble() {
+      if (this.tab !== "mask" || !this.maskEditing) return;
+      if (this.maskPoints.length >= 3) { this.maskClosed = true; this.hover = null; this.draw(); }
+    },
+    onRight() {
+      if (this.tab !== "mask" || !this.maskEditing) return;
+      this.maskClosed = false; this.maskPoints.pop(); this.draw();
+    },
+    async saveMask() {
+      this.message = ""; this.busy = true;
+      try {
+        const points = this.maskPoints.map((p) => [Math.round(p.x), Math.round(p.y)]);
+        const saved = await ESC.api(`/calibration/${encodeURIComponent(this.caseId)}/mask`, { json: { points } });
+        await this.loadCase();                      // refresh valid region, default ROIs and the red overlay
+        this.message = `已寫入 ${saved.path}\n${saved.note}`;
+      } catch (e) { this.error = e.message; } finally { this.busy = false; }
+    },
     onDown(event) {
       this.$refs.canvas.focus();
+      if (this.tab === "mask") {
+        if (!this.maskEditing || this.maskClosed || event.button !== 0 || !images.original) return;
+        const p = this.toImage(event);
+        const last = this.maskPoints[this.maskPoints.length - 1];
+        const near = 6 * this.imageSize.width / this.$refs.canvas.getBoundingClientRect().width;
+        if (last && Math.hypot(p.x - last.x, p.y - last.y) < near) return;   // 2nd press of a double click
+        this.maskPoints.push({ x: Math.min(Math.max(p.x, 0), this.imageSize.width - 1),
+                               y: Math.min(Math.max(p.y, 0), this.imageSize.height - 1) });
+        this.draw();
+        return;
+      }
       if (this.tab !== "rotation" || !images.original) return;
       const p = this.toImage(event);
       const index = this.rois.findIndex((r) => p.x >= r.x && p.x <= r.x + r.side && p.y >= r.y && p.y <= r.y + r.side);
@@ -140,6 +179,10 @@ Vue.createApp({
       this.drag = { index, start: p, x: this.rois[index].x, y: this.rois[index].y };
     },
     onMove(event) {
+      if (this.tab === "mask") {
+        if (this.maskEditing && !this.maskClosed && this.maskPoints.length) { this.hover = this.toImage(event); this.draw(); }
+        return;
+      }
       if (!this.drag) return;
       const p = this.toImage(event);
       const roi = this.rois[this.drag.index];
@@ -160,7 +203,7 @@ Vue.createApp({
         if (!roi) return;
         roi.x += move[0] * this.step; roi.y += move[1] * this.step;
         this.changed();
-      } else if (move[0]) {
+      } else if (this.tab === "strips" && move[0]) {
         this.strips.x_offset = Math.max(0, this.strips.x_offset + move[0] * this.step);   // watcher -> preview
       }
     },
@@ -168,15 +211,28 @@ Vue.createApp({
     // ---------------------------------------------------------------- drawing
     draw() {
       const canvas = this.$refs.canvas;
-      const bitmap = this.tab === "strips" && images.rotated ? images.rotated : images.original;
+      let bitmap = this.tab === "strips" && images.rotated ? images.rotated : images.original;
+      if (this.tab === "mask" && !this.maskEditing && images.overlay) bitmap = images.overlay;
       const ctx = canvas.getContext("2d");
       if (!bitmap) { ctx.clearRect(0, 0, canvas.width, canvas.height); return; }
       canvas.width = bitmap.width; canvas.height = bitmap.height;
       const s = bitmap.width / this.imageSize.width;
       ctx.drawImage(bitmap, 0, 0);
       ctx.lineWidth = 2; ctx.font = "bold 18px sans-serif";
-      if (this.tab === "rotation") this.drawRotation(ctx, s, canvas);
+      if (this.tab === "mask") this.drawMask(ctx, s);
+      else if (this.tab === "rotation") this.drawRotation(ctx, s, canvas);
       else this.drawStrips(ctx, s, canvas);
+    },
+    drawMask(ctx, s) {
+      const pts = this.maskPoints;
+      if (!this.maskEditing || !pts.length) return;
+      ctx.beginPath();
+      pts.forEach((p, i) => (i ? ctx.lineTo(p.x * s, p.y * s) : ctx.moveTo(p.x * s, p.y * s)));
+      if (this.maskClosed) { ctx.closePath(); ctx.fillStyle = "rgba(255, 0, 0, 0.35)"; ctx.fill(); }
+      else if (this.hover) ctx.lineTo(this.hover.x * s, this.hover.y * s);
+      ctx.strokeStyle = COLORS.valid; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = "#ff3b30";
+      pts.forEach((p) => { ctx.beginPath(); ctx.arc(p.x * s, p.y * s, 5, 0, 2 * Math.PI); ctx.fill(); });
     },
     drawRotation(ctx, s, canvas) {
       if (this.validRegion) {

@@ -44,6 +44,63 @@ def resolve_project(project, data_root):
     raise SystemExit(f"escount: project {project!r} not found (neither a directory nor a case under {data_root})")
 
 
+def cmd_copy_params(args):
+    """Transfer valid region (background_BW.png), rotation ROIs and counting strips from one project to another.
+
+    The rotation angle is always re-estimated on the target's own reference image (calibrate_project),
+    so the target's project.json is rewritten; its trained models must be rebuilt afterwards.
+    """
+    import shutil
+
+    from escount.calibration.calibrate import (
+        PROFILE_NAME, CalibrationConfig, CalibrationQualityError, ProjectProfile, calibrate_project,
+    )
+    from escount.es_counting import MASK_NAME, list_images, read_gray
+
+    source, target = resolve_project(args.source, args.data_root), resolve_project(args.target, args.data_root)
+    profiles = Path(args.profiles_root)
+    source_profile_path = profiles / source.name / PROFILE_NAME
+    if not source_profile_path.is_file():
+        raise SystemExit(f"escount copy-params: source project.json not found: {source_profile_path}")
+    source_profile = ProjectProfile.load(source_profile_path)
+    what = set(args.what)
+    target_profile_path = profiles / target.name / PROFILE_NAME
+    old_strips = ProjectProfile.load(target_profile_path).strip_params if target_profile_path.is_file() else {}
+
+    if "mask" in what:
+        shape = read_gray(list_images(target)[0]).shape
+        mask_size = source_profile.image_size
+        if (mask_size["height"], mask_size["width"]) != tuple(shape):
+            raise SystemExit(f"escount copy-params: image size differs (source {mask_size['width']}x{mask_size['height']}, "
+                             f"target {shape[1]}x{shape[0]}); the mask cannot be copied")
+        destination = target / MASK_NAME
+        if destination.is_file():
+            backup = profiles / target.name / "background_BW.prev.png"
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(destination, backup)
+            print(f"previous mask saved to {backup}")
+        shutil.copy2(source / MASK_NAME, destination)
+        print(f"copied {source / MASK_NAME} -> {destination}")
+
+    rois = source_profile.rois if "rois" in what else None
+    config = CalibrationConfig(roi_side=max(roi.side for roi in source_profile.rois)) if rois else CalibrationConfig()
+    status = 0
+    try:
+        profile = calibrate_project(target, profiles, config=config, rois=rois)
+    except CalibrationQualityError as error:
+        profile = ProjectProfile.load(target_profile_path)
+        print(f"escount copy-params: {error}", file=sys.stderr)
+        status = 2
+    except ValueError as error:
+        raise SystemExit(f"escount copy-params: {error}") from error
+    profile.strip_params = dict(source_profile.strip_params) if "strips" in what else old_strips
+    profile.save(target_profile_path)
+    print(f"{source.name} -> {target.name}: copied {sorted(what)}; angle_deg={profile.angle_deg:+.4f} "
+          f"quality_status={profile.quality_status} strip_params={profile.strip_params}")
+    print("re-run prepare / train / select-rois / all-rois for the target (its trained models are refused until then)")
+    return status
+
+
 def cmd_calibrate(args):
     from escount.calibration.calibrate import CalibrationConfig, CalibrationQualityError, calibrate_project
 
@@ -338,6 +395,15 @@ def build_parser():
     calibrate.add_argument("--roi-side", type=int, default=384, help="square ROI side in px, >= 300 (default: 384)")
     calibrate.add_argument("--reference", help="reference image file name (default: largest file-name number)")
     calibrate.set_defaults(func=cmd_calibrate)
+
+    copy = sub.add_parser("copy-params", help="copy mask / rotation ROIs / counting strips from one project to another")
+    copy.add_argument("--from", dest="source", required=True, help="source case id (must have project.json)")
+    copy.add_argument("--to", dest="target", required=True, help="target case id or folder")
+    copy.add_argument("--what", nargs="+", choices=("mask", "rois", "strips"), default=["mask", "rois", "strips"],
+                      help="what to copy (default: all three)")
+    copy.add_argument("--data-root", default="Data", help="root folder of case ids (default: Data)")
+    copy.add_argument("--profiles-root", default="outputs/projects", help="profiles root (default: outputs/projects)")
+    copy.set_defaults(func=cmd_copy_params)
 
     prepare = sub.add_parser("prepare", help="feature cache (multiprocess) -> outputs/features/<case>/features.parquet")
     _target(prepare)

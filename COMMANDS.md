@@ -41,6 +41,22 @@ uv run escount calibrate --project x05_unpress
 #   --roi-side 384        : 方塊 ROI 邊長像素（預設 384）
 ```
 
+#### 步驟 0 前置：background_BW.png 確認／圈選（校正頁 `(0) 背景 BW 確認`）
+* 已有 `background_BW.png`：以原圖疊加透明紅色顯示有效區域；無誤可直接進入 `(a) 旋轉校正 ROI`。
+* 無檔案或要修正：按「開始圈選／重新圈選」。左鍵 = 加節點；右鍵 = 取消上一個節點；左鍵連點兩下 = 確定範圍（至少 3 點）；再按「儲存 background_BW.png」。多邊形內 = 有效區（黑 0），外側 = 白 255。
+* 覆寫前舊檔會備份到 `outputs/projects/<專案>/background_BW.prev.png`。遮罩改變後需重跑 校正 → prepare → train → select-rois。
+
+#### 跨專案轉移設定（有效區域 / 旋轉校正 ROI / 計片條帶）
+`project.json` 內的 `valid_region` 是由 `background_BW.png` 算出的衍生值，不能單獨貼上；實際可轉移的是三項：遮罩檔、旋轉 ROI、計片條帶 `strip_params`。旋轉角度一律用目標專案自己的影像重算。
+```powershell
+# 全部轉移（遮罩 + ROI + 條帶）；兩專案影像尺寸須相同
+uv run escount copy-params --from 20261020_TH01mm_03x_non-press --to 20261020_TH01mm_05x_non-press
+# 只轉移條帶參數（目標保留自己的遮罩與 ROI）
+uv run escount copy-params --from <來源> --to <目標> --what strips
+# --what 可選 mask rois strips，可複選
+```
+手動複製貼上：複製 `Data/<來源>/background_BW.png` 到目標資料夾，並把 `project.json` 的 `strip_params` 區塊貼到目標；之後仍需執行 `escount calibrate --project <目標>` 重算角度。轉移後目標的 prepare / train / select-rois / all-rois 要重跑。
+
 ### 步驟 1：建立多特徵快取 (Prepare)
 ```powershell
 # 單一專案
