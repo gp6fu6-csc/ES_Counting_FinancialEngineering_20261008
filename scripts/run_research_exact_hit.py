@@ -155,9 +155,15 @@ class ResearchProcedureExact:
         return pd.Series(out).reindex(test_rows["image_id"].unique())
 
 
-def run_exact_research(cases=None, trials=10, hours=None, storage=DEFAULT_STORAGE, device="cuda"):
+def run_exact_research(cases=None, trials=10, hours=None, storage=DEFAULT_STORAGE, device="cuda",
+                       data_root="Data", profiles_root="outputs/projects", output_root=None):
     config = load_general_config()
-    all_projects = [d.name for d in Path("Data").iterdir() if d.is_dir()]
+    if output_root:         # isolated workspace (escount batch): shadows the module-level roots below
+        RESEARCH_ROOT = Path(output_root) / "research" / TRACK_NAME
+        CANDIDATES_ROOT = Path(output_root) / "candidates" / TRACK_NAME
+    else:
+        RESEARCH_ROOT, CANDIDATES_ROOT = globals()["RESEARCH_ROOT"], globals()["CANDIDATES_ROOT"]
+    all_projects = [d.name for d in Path(data_root).iterdir() if d.is_dir()]
     projects = sorted(active_projects(all_projects, config))
     target_cases = cases or projects
 
@@ -168,7 +174,7 @@ def run_exact_research(cases=None, trials=10, hours=None, storage=DEFAULT_STORAG
 
     def get_table(case_name, grid):
         cache_root = RESEARCH_ROOT / "features" / config_hash(grid.to_dict())[:16]
-        path, _ = prepare(case_name, "Data", "outputs/projects", cache_root, None, grid)
+        path, _ = prepare(case_name, data_root, profiles_root, cache_root, None, grid)
         expected = [{"image_id": f"{case_name}/{item['name']}", "case": case_name, "image": item["name"], "gt": item["gt"]}
                     for item in load_manifest(case_name, cache_root)["images"]]
         return pd.read_parquet(path), expected

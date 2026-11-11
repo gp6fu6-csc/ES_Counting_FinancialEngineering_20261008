@@ -57,6 +57,19 @@ uv run escount copy-params --from <來源> --to <目標> --what strips
 ```
 手動複製貼上：複製 `Data/<來源>/background_BW.png` 到目標資料夾，並把 `project.json` 的 `strip_params` 區塊貼到目標；之後仍需執行 `escount calibrate --project <目標>` 重算角度。轉移後目標的 prepare / train / select-rois / all-rois 要重跑。
 
+#### 一鍵批次：範本參數 → 全部專案訓練 → 通用模型 → AutoResearch 四軌 → 報告 (`escount batch`)
+```powershell
+uv run escount batch --template press-Red-70 --dry-run      # 先預演，不寫檔
+uv run escount batch --template press-Red-70                # 預設 --data-root Data/Case_Study
+uv run escount batch --template press-Red-70 --data-root Data\Case_Study D:\其他資料集 --trials 10 --device cuda
+```
+* `--template`：只提供幾何設定（旋轉 ROI、計片條帶；目標沒有遮罩時連 `background_BW.png` 一起複製），旋轉角度用各專案自己的影像重算；每個專案用自己的影像訓練。
+* 只用「檔名 = 片數」的影像；`testX.png`、`test.txt`、子資料夾（如 `test\`）、以 `test` 開頭的資料夾一律不用；可訓練影像少於 3 張的資料夾略過。
+* 輸出全部在 `--output`（預設 `outputs/case_study/`），不會動到 `outputs/projects/`。已有的 `project.json` 先改名為 `project_YYYYMMDD_N.json` 再套用（`--keep-existing` 則保留）。
+* 結果：`summary.md` / `summary.csv`（各專案 × 四軌交叉對比）、`mask_overlays/*.png`（遮罩疊圖，請抽查）、`report*/latest/report.html`、`projects/<專案>/model/`。
+* 推論時加 `--profiles-root outputs\case_study\projects`（Python：`InferenceEngine.load(..., profiles_root="outputs/case_study/projects")`）。
+* 完整教學範例：`scripts/batch_sample.ps1`。
+
 ### 步驟 1：建立多特徵快取 (Prepare)
 ```powershell
 # 單一專案

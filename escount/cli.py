@@ -101,6 +101,12 @@ def cmd_copy_params(args):
     return status
 
 
+def cmd_batch(args):
+    from escount.batch import run_batch
+
+    return run_batch(args)
+
+
 def cmd_calibrate(args):
     from escount.calibration.calibrate import CalibrationConfig, CalibrationQualityError, calibrate_project
 
@@ -404,6 +410,30 @@ def build_parser():
     copy.add_argument("--data-root", default="Data", help="root folder of case ids (default: Data)")
     copy.add_argument("--profiles-root", default="outputs/projects", help="profiles root (default: outputs/projects)")
     copy.set_defaults(func=cmd_copy_params)
+
+    batch = sub.add_parser("batch", help="template geometry -> train every project -> General -> 4-track "
+                                         "AutoResearch -> report (isolated output folder)")
+    batch.add_argument("--template", required=True, help="calibrated project to copy ROIs / strips / mask from "
+                                                         "(case id or folder path)")
+    batch.add_argument("--data-root", nargs="+", default=["Data/Case_Study"],
+                       help="folder(s) whose sub-folders are projects (default: Data/Case_Study)")
+    batch.add_argument("--projects", nargs="+", help="only these project folder names (default: all)")
+    batch.add_argument("--template-data-root", default="Data", help="where the template folder is (default: Data)")
+    batch.add_argument("--template-profiles-root", default="outputs/projects",
+                       help="where the template project.json is (default: outputs/projects)")
+    batch.add_argument("--output", default="outputs/case_study", help="isolated output folder (default: outputs/case_study)")
+    batch.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
+    batch.add_argument("--trials", type=int, default=10, help="AutoResearch trials per project and track (default 10)")
+    batch.add_argument("--max-rois", type=int, default=25)
+    batch.add_argument("--max-rows-per-image", type=int, default=1000)
+    batch.add_argument("--workers", type=int, default=None, help="feature worker processes (default: os.cpu_count())")
+    batch.add_argument("--config", default="configs/general.json", help="General config (excluded_projects)")
+    batch.add_argument("--keep-existing", action="store_true",
+                       help="keep an existing project.json in the output folder instead of backing it up and replacing it")
+    batch.add_argument("--no-general", action="store_true", help="skip the General (all projects together) model")
+    batch.add_argument("--skip-research", action="store_true", help="skip AutoResearch and the report")
+    batch.add_argument("--dry-run", action="store_true", help="list what would be processed, write nothing")
+    batch.set_defaults(func=cmd_batch)
 
     prepare = sub.add_parser("prepare", help="feature cache (multiprocess) -> outputs/features/<case>/features.parquet")
     _target(prepare)
