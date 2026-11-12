@@ -68,6 +68,17 @@ uv run escount batch --template press-Red-70 --data-root Data\Case_Study D:\其�
 * 輸出全部在 `--output`（預設 `outputs/case_study/`），不會動到 `outputs/projects/`。已有的 `project.json` 先改名為 `project_YYYYMMDD_N.json` 再套用（`--keep-existing` 則保留）。
 * 結果：`summary.md` / `summary.csv`（各專案 × 四軌交叉對比）、`mask_overlays/*.png`（遮罩疊圖，請抽查）、`report*/latest/report.html`、`projects/<專案>/model/`。
 * 推論時加 `--profiles-root outputs\case_study\projects`（Python：`InferenceEngine.load(..., profiles_root="outputs/case_study/projects")`）。
+* `--infer`：再執行訓練頁「4. 分析全部」（同一個 `escount infer` 指令），結果寫到 `--results-root`（預設 `<output>/infer`）。
+
+#### CLI 與網頁 UI 共用同一份專案（校正 → 訓練 1~4 → 推論）
+```powershell
+# CLI：套用 template 校正 → prepare / train / select-rois / all-rois → 分析全部
+uv run escount batch --template press-Red-70 --skip-research --no-general --infer
+# 網頁：指向同一組資料夾，校正頁 / 訓練頁按鈕 / 結果頁就會讀寫同一份專案
+uv run escount serve --root Data/Case_Study --profiles-root outputs/case_study/projects `
+    --features-root outputs/case_study/features --results-root outputs/case_study/infer
+```
+訓練頁按鈕會自動帶上伺服器的 `--data-root`、`--profiles-root`、`--cache-root`；用預設啟動（`uv run escount serve`）時行為與原本相同。
 * 完整教學範例：`scripts/batch_sample.ps1`。
 
 ### 步驟 1：建立多特徵快取 (Prepare)

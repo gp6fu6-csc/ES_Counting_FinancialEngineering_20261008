@@ -92,8 +92,14 @@ class TrainingPageTests(unittest.TestCase):
         job = self.status()["job"]
         self.assertEqual(job["status"], "done")
         self.assertEqual(job["returncode"], 0)
-        self.assertEqual(job["log"], ["$ escount prepare --project SynA", "step started", "step finished"])
-        self.assertEqual(fake.command[1:], ["-m", "escount.cli", "prepare", "--project", "SynA"])
+        self.assertEqual(job["log"], ["$ escount " + " ".join(["prepare", "--project", "SynA", *self.roots()]),
+                                      "step started", "step finished"])
+        self.assertEqual(fake.command[1:], ["-m", "escount.cli", "prepare", "--project", "SynA", *self.roots()])
+
+    def roots(self):
+        """The server's own folders, appended by the training page to every step command."""
+        return ["--data-root", str(self.data.resolve()), "--profiles-root", str(self.profiles),
+                "--cache-root", str(self.features)]
 
     def test_failed_job_is_reported(self):
         self.run_step("prepare", FakeProcess(returncode=1))
@@ -116,12 +122,13 @@ class TrainingPageTests(unittest.TestCase):
         self.assertEqual(self.loaded_models(), ["project"])
         fake = FakeProcess()
         self.assertEqual(self.run_step("train", fake, device="cpu").status_code, 200)
-        self.assertEqual(fake.command[3:], ["train", "--project", "SynA", "--device", "cpu"])
+        self.assertEqual(fake.command[3:], ["train", "--project", "SynA", "--device", "cpu", *self.roots()])
         self.assertEqual(self.loaded_models(), [])            # next infer / preview loads the new model
         if self.status()["steps"]["select"]:
             self.assertEqual(self.run_step("infer", fake).status_code, 200)
             self.assertEqual(fake.command[3:], ["infer", "--project", "SynA", "--input", str(self.data / "SynA"),
-                                                "--output", str(self.results / "SynA")])
+                                                "--output", str(self.results / "SynA"),
+                                                "--profiles-root", str(self.profiles)])
 
     def loaded_models(self):
         projects = self.client.get("/projects").json()["projects"]

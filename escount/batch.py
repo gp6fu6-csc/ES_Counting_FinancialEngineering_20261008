@@ -198,6 +198,8 @@ def train_projects(projects, template, template_mask, args, paths, results, log=
                  ("select_rois", lambda: select_project(name, paths["features"], paths["projects"], args.device,
                                                         args.max_rois)),
                  ("all_rois", lambda: train_all_rois(name, paths["projects"], root, args.device)))
+        if args.infer:      # step 4 of the training page: the same `escount infer` command and output folder
+            steps += (("infer", lambda: infer_project(project, paths)),)
         for stage, function in steps:
             if not ok:
                 record[stage] = {"status": "skipped (earlier stage failed)"}
@@ -205,6 +207,19 @@ def train_projects(projects, template, template_mask, args, paths, results, log=
             log(f"  -> {stage}")
             ok = run_stage(record, stage, function, log)
         record["ok"] = ok
+
+
+def infer_project(project, paths):
+    """`escount infer --project <case> --input <folder> --output <results>/<case>` (= training page step 4)."""
+    from escount.cli import main
+
+    try:
+        status = main(["infer", "--project", project["name"], "--input", str(project["path"]),
+                       "--output", str(paths["infer"] / project["name"]), "--profiles-root", str(paths["projects"])])
+    except SystemExit as error:                 # cmd_infer reports errors with SystemExit
+        raise RuntimeError(str(error)) from error
+    if status:
+        raise RuntimeError(f"escount infer exited with {status}")
 
 
 def train_general_models(names, args, paths, log=print):
@@ -331,7 +346,8 @@ def run_batch(args, log=print):
     output = Path(args.output)
     paths = {"output": output, "projects": output / "projects", "features": output / "features",
              "research": output / "research", "candidates": output / "candidates",
-             "overlays": output / "mask_overlays"}
+             "overlays": output / "mask_overlays",
+             "infer": Path(args.results_root) if args.results_root else output / "infer"}
     log(f"template: {args.template} (ROIs {len(template.rois)}, strips {template.strip_params})")
     log(f"outputs : {output.resolve()}")
     for project in projects:

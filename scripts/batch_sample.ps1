@@ -67,6 +67,18 @@ uv run escount batch --template press-Red-70 --skip-research
 uv run escount batch --template press-Red-70 --keep-existing
 
 # ---------------------------------------------------------------------------
+# 範例 9：等同網頁「校正 -> 訓練 1~4」全部步驟（含 4. 分析全部），不跑研究
+#         之後用範例 10 啟動網頁，即可在網頁與 CLI 間共用同一份專案資料
+# ---------------------------------------------------------------------------
+uv run escount batch --template press-Red-70 --skip-research --no-general --infer
+
+# ---------------------------------------------------------------------------
+# 範例 10：網頁 UI 指向 batch 的資料與輸出（校正頁、訓練頁按鈕、結果頁都會用這些路徑）
+# ---------------------------------------------------------------------------
+uv run escount serve --root Data/Case_Study --profiles-root outputs/case_study/projects `
+    --features-root outputs/case_study/features --results-root outputs/case_study/infer
+
+# ---------------------------------------------------------------------------
 # 完成後要看的檔案（以預設 --output outputs\case_study 為例）
 # ---------------------------------------------------------------------------
 #   outputs\case_study\summary.md              各專案各步驟狀態 + 四軌最佳結果交叉對比表

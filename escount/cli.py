@@ -352,7 +352,8 @@ def cmd_serve(args):
 
     single_thread()                           # inference: single-process, single-thread CPU
     config = ServerConfig(profiles_root=args.profiles_root, allowed_roots=tuple(args.root or ["Data"]),
-                          api_key=api_key, general_config=args.config)
+                          api_key=api_key, general_config=args.config,
+                          features_root=args.features_root, results_root=args.results_root)
     uvicorn.run(create_app(config), host=args.host, port=args.port, log_level="info")
     return 0
 
@@ -432,6 +433,9 @@ def build_parser():
                        help="keep an existing project.json in the output folder instead of backing it up and replacing it")
     batch.add_argument("--no-general", action="store_true", help="skip the General (all projects together) model")
     batch.add_argument("--skip-research", action="store_true", help="skip AutoResearch and the report")
+    batch.add_argument("--infer", action="store_true",
+                       help="also analyse every image of each project (training page step 4) into --results-root")
+    batch.add_argument("--results-root", help="infer outputs (default: <output>/infer)")
     batch.add_argument("--dry-run", action="store_true", help="list what would be processed, write nothing")
     batch.set_defaults(func=cmd_batch)
 
@@ -531,6 +535,9 @@ def build_parser():
     serve.add_argument("--root", action="append", help="folder /infer/path may read from (repeatable; default Data)")
     serve.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")
     serve.add_argument("--config", default="configs/general.json", help="General config (production General model)")
+    serve.add_argument("--features-root", default="outputs/features", help="feature cache (default: outputs/features)")
+    serve.add_argument("--results-root", default="outputs/infer", help="infer outputs for the results page "
+                                                                       "(default: outputs/infer)")
     serve.set_defaults(func=cmd_serve)
     return parser
 

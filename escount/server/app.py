@@ -757,12 +757,16 @@ def create_app(config=ServerConfig()):
             missing = [s for s in order[:order.index(body.step)] if not steps[s]]
         if missing:
             raise HTTPException(409, f"請先完成前面的步驟：{', '.join(missing)}")
-        args = {"prepare": ["prepare", "--project", case],
-                "train": ["train", "--project", case, "--device", body.device],
-                "select": ["select-rois", "--project", case],
-                "all_rois": ["all-rois", "--project", case],
+        # the server's own folders, so the buttons act on the project the page shows (not the CLI defaults)
+        roots = ["--data-root", str(state.data_root), "--profiles-root", str(state.profiles_root),
+                 "--cache-root", str(config.features_root)]
+        args = {"prepare": ["prepare", "--project", case, *roots],
+                "train": ["train", "--project", case, "--device", body.device, *roots],
+                "select": ["select-rois", "--project", case, *roots],
+                "all_rois": ["all-rois", "--project", case, *roots],
                 "infer": ["infer", "--project", case, "--input", str(folder),
-                          "--output", str(Path(config.results_root) / case)]}[body.step]
+                          "--output", str(Path(config.results_root) / case),
+                          "--profiles-root", str(state.profiles_root)]}[body.step]
         with job_lock:
             if job["status"] == "running":
                 raise HTTPException(409, f"已有工作執行中：{job['case']} / {job['step']}")
