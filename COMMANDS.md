@@ -68,17 +68,6 @@ uv run escount batch --template press-Red-70 --data-root Data\Case_Study D:\其�
 * 輸出全部在 `--output`（預設 `outputs/case_study/`），不會動到 `outputs/projects/`。已有的 `project.json` 先改名為 `project_YYYYMMDD_N.json` 再套用（`--keep-existing` 則保留）。
 * 結果：`summary.md` / `summary.csv`（各專案 × 四軌交叉對比）、`mask_overlays/*.png`（遮罩疊圖，請抽查）、`report*/latest/report.html`、`projects/<專案>/model/`。
 * 推論時加 `--profiles-root outputs\case_study\projects`（Python：`InferenceEngine.load(..., profiles_root="outputs/case_study/projects")`）。
-* `--infer`：再執行訓練頁「4. 分析全部」（同一個 `escount infer` 指令），結果寫到 `--results-root`（預設 `<output>/infer`）。
-
-#### CLI 與網頁 UI 共用同一份專案（校正 → 訓練 1~4 → 推論）
-```powershell
-# CLI：套用 template 校正 → prepare / train / select-rois / all-rois → 分析全部
-uv run escount batch --template press-Red-70 --skip-research --no-general --infer
-# 網頁：指向同一組資料夾，校正頁 / 訓練頁按鈕 / 結果頁就會讀寫同一份專案
-uv run escount serve --root Data/Case_Study --profiles-root outputs/case_study/projects `
-    --features-root outputs/case_study/features --results-root outputs/case_study/infer
-```
-訓練頁按鈕會自動帶上伺服器的 `--data-root`、`--profiles-root`、`--cache-root`；用預設啟動（`uv run escount serve`）時行為與原本相同。
 * 完整教學範例：`scripts/batch_sample.ps1`。
 
 ### 步驟 1：建立多特徵快取 (Prepare)
@@ -338,8 +327,63 @@ uv run escount report --out outputs/research_report
 
 ```powershell
 # 執行全單元測試 (126 項驗證)
-uv run pytest
+```powershell
+uv run escount report --out outputs/research_report
+# 產出位置：outputs/research_report/latest/report.html 與 summary.md
+#   --results-root <資料夾> : escount infer 的輸出（正式模型 GT vs Predict 圖用；預設 outputs/infer）
+```
+報告內容（2026-11-13 新增）：
+* **GT vs Predict 點陣圖**：橫軸 GT、縱軸 Predict；虛線 y = x = 完全命中，淺綠帶 ±0.5 = 四捨五入後命中；● 命中、× 未命中；標題 = 資料名稱 + 完全命中 hits/total (%)，第二行標註預測來源。
+  * `<案例>/gt_vs_pred.png`：AutoResearch 最佳設定的 **LOIO** 預測（影像未參與訓練，原始預測值）→ 代表沒看過的影像。
+  * `<案例>/gt_vs_pred_model.png`：**正式推論模型** `escount infer` 的結果（訓練影像自我預測，偏樂觀，整數值）；需先執行 infer（batch 加 `--infer`），否則顯示「尚無預測資料」。
+  * `comparison/gt_vs_pred_all.png`、`comparison/gt_vs_pred_all_model.png`：全部資料集合併，顏色區分資料集，圖例列出各組 hits/total。
+* **正式推論模型表**新增「全部 ROI 整合（方法 / 條數）」「全部 ROI 命中」兩欄，與「部署 ROI（最少 ROI）」直接對比。
 
-# 執行 55 項依賴套件開源授權合規審查（確保無 GPL 傳染性與商業版稅）
-uv run python scripts/check_licenses.py
+### AutoResearch 名詞說明
+* **trial**：試一組完整設定並評分一次（條帶 w / D / 位移、投影、指標族、模型與超參數、ROI 上限、整合方式）。取樣用 Optuna **TPE 貝氏最佳化**：前 5 次隨機探索，之後依結果往表現好的區域取樣；評分 = LOIO 完全命中。`--trials N` = 每個專案、每一軌各 N 次。
+* **以「完全正確」為目標**：default 軌（排序 = 命中率 → ROI 少 → 速度）與 exact_hit 軌（命中數優先，另含 Soft Exact-Hit Loss、離散殘差分類器）；mae 軌則以平均誤差最小為目標。
+* 同一個輸出資料夾再跑會**接續累積** trial；換新資料夾則從零開始。
+
+### Case_Study 深度研究（cmd 指令，`escount batch`）
+以指定專案的參數為預設條件，對 `Data/Case_Study` 全部資料集：套用範本 → 各專案訓練 1~4 → 通用模型 → AutoResearch 四軌 → 報告。
+```cmd
+cd /d F:\Antigravity_2_0\20261102_ESCountingFinace
+:: 先預演（不寫檔）
+uv run escount batch --template press-Red-70 --dry-run
+:: 正式執行（輸出到新資料夾；資料夾要先建立，cmd 才能寫 log）
+mkdir outputs\case_study_20261113
+uv run escount batch --template press-Red-70 --data-root Data/Case_Study --output outputs/case_study_20261113 --trials 30 --device cuda --infer > outputs\case_study_20261113\batch_log_deep.txt 2>&1
+:: 另開視窗看進度
+powershell -Command "Get-Content outputs\case_study_20261113\batch_log_deep.txt -Tail 20 -Wait"
+```
+* 兩個路徑意義不同：`--output ...` = batch 所有結果的根目錄（`projects/`、`features/`、`research/`、`candidates/`、`infer/`、`report*/`、`summary.*`、`mask_overlays/`）；`> ...\batch_log_deep.txt` = cmd 把畫面輸出存成 log 檔。改輸出位置時兩處都要改。
+* 已有 `project.json` 會先改名為 `project_YYYYMMDD_N.json` 再套用範本；要保留手動調整用 `--keep-existing`。
+* 執行時間約與 trials 成正比（trials=2 的研究部分即 > 1 小時）；電腦勿睡眠（`powercfg /change standby-timeout-ac 0`），斷網不影響。
+* 網頁 / 推論指向該次輸出：
+```cmd
+uv run escount serve --root Data/Case_Study --profiles-root outputs/case_study_20261113/projects --features-root outputs/case_study_20261113/features --results-root outputs/case_study_20261113/infer
+uv run escount infer --project press-Red-20 --profiles-root outputs/case_study_20261113/projects --input <影像或資料夾> --output outputs/case_study_20261113/infer_new
+```
+* 只更新報告（不重跑研究），例如 default 軌：
+```cmd
+uv run escount report --out outputs/case_study_20261113/report --cases press-Red-20 press-Red-40 press-Red-70 press-Red-max press-White-18 press-White-28 press-White-45 press-White-60 unpress-Red-70 unpress-White-45 general --research-root outputs/case_study_20261113/research/default --candidates-root outputs/case_study_20261113/candidates/default --storage "sqlite:///outputs/case_study_20261113/research/study_default.db" --profiles-root outputs/case_study_20261113/projects --results-root outputs/case_study_20261113/infer
+```
+
+### Data 底下單一專案：用指定專案參數完整訓練（網頁預設即可顯示）
+```cmd
+:: 套用 press-Red-70 參數 → prepare / train / select-rois / all-rois → 分析全部，結果寫入 outputs/projects 等預設位置
+uv run escount batch --template press-Red-70 --data-root Data --output outputs --projects press-Red-max --skip-research --no-general --infer
+:: 之後用預設啟動網頁（已開著請 Ctrl+C 重啟，讓伺服器載入新模型）
+uv run escount serve
+```
+* 一定要加 `--projects`，否則 `Data/` 底下全部專案（含範本本身）都會被重新校正與重訓；目標不要寫成範本自己。
+* 已校正過、只重跑 1~4（全部步驟用同一組路徑）：
+```cmd
+uv run escount prepare --project press-Red-max
+uv run escount train --project press-Red-max --device cuda
+uv run escount select-rois --project press-Red-max
+uv run escount all-rois --project press-Red-max --device cuda
+uv run escount infer --project press-Red-max --input Data/press-Red-max --output outputs/infer/press-Red-max
+```
+注意 `escount calibrate` 會重寫 `project.json` 並清空 `strip_params`；要保留條帶請用 `copy-params` 或網頁校正頁「儲存」。run python scripts/check_licenses.py
 ```
