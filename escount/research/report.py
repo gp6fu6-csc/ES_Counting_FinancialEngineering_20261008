@@ -18,6 +18,8 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+import matplotlib
+
 import numpy as np
 import pandas as pd
 
@@ -33,10 +35,13 @@ from escount.research.evaluate import wilson_interval
 
 PROJECT_CASES = ("20260904-thinkness02_postition1", "20260904-thinkness02_postition2", "Ring-type", "T-type")
 CASE_FILES = ("best_params.json", "results.tsv", "progress.png", "param_importance.png", "param_sensitivity.png",
-              "per_image.csv")
+              "per_image.csv", "gt_vs_pred.png", "gt_vs_pred_model.png")
 RING_FILE = "ring_inclusion.png"
 COMPARISON_FILES = ("project_vs_general.csv", "project_vs_general.png", "roi_count_vs_hit.png",
-                    "param_importance_heatmap.png", "latency.png")
+                    "param_importance_heatmap.png", "latency.png", "gt_vs_pred_all.png", "gt_vs_pred_all_model.png")
+# GT vs Predict scatter: two prediction sources, always labelled on the figure
+GT_PRED_SOURCES = {"research": "來源：AutoResearch 最佳設定的 LOIO 預測（每張影像都未參與訓練；原始預測值）",
+                   "model": "來源：正式推論模型 escount infer（訓練影像自我預測，偏樂觀；整數預測值）"}
 ADOPTED_COLUMN = "已複製候選（推論未使用）"   # escount adopt only archives the candidate; inference uses model/
 SCOPE_NOTE = ("「各案例最佳結果」的命中率屬於研究程序（candidates/）；正式推論模型由 escount train + select-rois "
               "產生，其部署 ROI 的誠實命中率見「正式推論模型」表（來源 outputs/projects/<case>/model/manifest.json）。"
@@ -309,6 +314,52 @@ def plot_roi_vs_hit(path, data):
     return figures.save(fig, path)
 
 
+def research_predictions(per_image):
+    """[project, GT, prediction] of the AutoResearch best candidate (LOIO rows of per_image.csv)."""
+    rows = per_image[per_image["scheme"] == "LOIO"] if "scheme" in per_image else per_image
+    return rows[["project", "GT", "prediction"]].dropna()
+
+
+def model_predictions(case, results_root):
+    """[project, GT, prediction] from <results_root>/<case>/predictions.csv (escount infer); labelled images only."""
+    path = Path(results_root) / case / "predictions.csv" if results_root else None
+    if path is None or not path.is_file():
+        return pd.DataFrame(columns=["project", "GT", "prediction"])
+    frame = pd.read_csv(path).dropna(subset=["GT", "N_pred"])
+    return pd.DataFrame({"project": case, "GT": frame["GT"], "prediction": frame["N_pred"]})
+
+
+def plot_gt_vs_pred(path, name, frame, source):
+    """GT (x) vs prediction (y); dashed y = x = exact hit, band +-0.5 = hit after rounding; one colour per data set."""
+    if frame.empty:
+        return figures.placeholder(path, f"{name}：GT vs Predict", f"尚無預測資料\n{GT_PRED_SOURCES[source]}")
+    gt, pred = frame["GT"].astype(float), frame["prediction"].astype(float)
+    hit = np.rint(pred) == gt
+    low, high = min(gt.min(), pred.min()) - 2, max(gt.max(), pred.max()) + 2
+    fig, ax = figures.new_figure()
+    line = np.array([low, high])
+    ax.fill_between(line, line - 0.5, line + 0.5, color="#2ca02c", alpha=0.12, label="±0.5（四捨五入後命中）")
+    ax.plot(line, line, "--", color="#444444", linewidth=1.5, label="完全命中 y = x")
+    groups = list(frame.groupby("project", sort=False))
+    palette = matplotlib.colormaps["tab20"]
+    for index, (project, rows) in enumerate(groups):
+        ok = hit.loc[rows.index]
+        colour = palette(index % 20) if len(groups) > 1 else "#1f77b4"
+        label = f"{project} {int(ok.sum())}/{len(rows)}"
+        ax.scatter(rows["GT"][ok], rows["prediction"][ok], s=60, color=colour, alpha=0.8, label=label)
+        ax.scatter(rows["GT"][~ok], rows["prediction"][~ok], s=90, color=colour, marker="x", linewidths=2.5)
+    ax.set_xlim(low, high)
+    ax.set_ylim(low, high)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("GT（實際片數）")
+    ax.set_ylabel("Predict（預測片數）")
+    ax.set_title(f"{name}：完全命中 {int(hit.sum())}/{len(frame)} ({hit.mean():.1%})　● 命中　× 未命中\n"
+                 f"{GT_PRED_SOURCES[source]}", fontsize=15)
+    ax.grid(alpha=0.3)
+    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=12)
+    return figures.save(fig, path)
+
+
 def plot_importance_heatmap(path, cases, importance):
     params = sorted({p for values in importance.values() if values for p in values})
     if not params:
@@ -418,10 +469,15 @@ def deployed_table(cases, profiles_root):
         manifest_path = model_dir / "model" / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
         deployed = (manifest.get("selection") or {}).get("deployed")
+        ensemble = manifest.get("all_rois_ensemble") or {}             # escount all-rois (every counting strip)
+        best_all = (ensemble.get("evaluation") or {}).get(ensemble.get("recommended"), {})
+        all_rois = ({"全部 ROI 整合（方法 / 條數）": f"{ensemble['recommended']} / {ensemble.get('roi_count')}",
+                     "全部 ROI 命中 hits/total": f"{best_all.get('hits')}/{best_all.get('total')}"} if best_all
+                    else {"全部 ROI 整合（方法 / 條數）": "—（未執行 escount all-rois）", "全部 ROI 命中 hits/total": "—"})
         if not deployed:
             rows.append({"案例": case, "模型": "—", "部署 ROI": "—", "命中 hits/total": "—", "命中率": "—",
                          "Wilson 95% CI": "—", "ROI 組": "尚無（先執行 escount train + select-rois）",
-                         "端到端最大延遲 ms": "—"})
+                         "端到端最大延遲 ms": "—", **all_rois})
             continue
         low, high = deployed["wilson95"]
         latency = ("—（General：見 escount infer --model general 的 timings_ms）" if case in GENERAL_CASES
@@ -436,12 +492,13 @@ def deployed_table(cases, profiles_root):
                      "命中 hits/total": f"{deployed['hits']}/{deployed['total']}", "命中率": pct(deployed["hit_rate"]),
                      "Wilson 95% CI": f"{pct(low)} – {pct(high)}",
                      "ROI 組": DEPLOYED_SOURCES.get(deployed["source"], deployed["source"]),
-                     "端到端最大延遲 ms": latency})
+                     "端到端最大延遲 ms": latency, **all_rois})
     return pd.DataFrame(rows)
 
 
 DEPLOYED_NOTE = ("命中數為誠實估計：貪婪子集 = 外層 LOIO 重做整個選擇（路徑 + 依 nested 曲線決定大小，皆不含被測影像）；"
-                 "完整 ROI 組 = 每個 fold 內選 baseline 版面與指標的 LOIO。延遲 = escount benchmark 單執行緒 CPU 最大值。")
+                 "完整 ROI 組 = 每個 fold 內選 baseline 版面與指標的 LOIO。延遲 = escount benchmark 單執行緒 CPU 最大值。"
+                 "「全部 ROI」欄 = escount all-rois 以校正頁全部計片條帶整合（推薦方法）的 LOIO，與「部署 ROI」（最少 ROI）對比。")
 
 
 def excluded_decision(config):
@@ -516,7 +573,8 @@ def write_html(path, out_dir, created, cases, summary, comparison, lopo, decisio
     for case in cases:
         case_dir = out_dir / case
         parts.append(f"<section><h2>{html.escape(case)}</h2>")
-        for name in ("progress.png", "param_importance.png", "param_sensitivity.png"):
+        for name in ("progress.png", "param_importance.png", "param_sensitivity.png", "gt_vs_pred.png",
+                     "gt_vs_pred_model.png"):
             parts.append(_img(case_dir / name, f"{case}/{name}"))
         parts.append("<h3>best_params.json</h3><pre>"
                      + html.escape((case_dir / "best_params.json").read_text(encoding="utf-8")) + "</pre>")
@@ -539,7 +597,7 @@ def _out_dir(out_root, timestamp):
 
 def build_report(out_root="outputs/research_report", cases=None, research_root="research",
                  candidates_root="candidates", storage=DEFAULT_STORAGE, profiles_root="outputs/projects",
-                 config_path="configs/general.json", log=print):
+                 config_path="configs/general.json", log=print, results_root="outputs/infer"):
     """Write the timestamped report directory and refresh <out_root>/latest/. Returns the timestamp dir.
     cases=None -> default_cases(config): excluded_projects are left out."""
     config = load_general_config(config_path)
@@ -567,6 +625,8 @@ def build_report(out_root="outputs/research_report", cases=None, research_root="
         plot_progress(case_dir / "progress.png", case, item["tsv"])
         plot_importance(case_dir / "param_importance.png", case, values, reason)
         plot_sensitivity(case_dir / "param_sensitivity.png", case, item["study"], values)
+        plot_gt_vs_pred(case_dir / "gt_vs_pred.png", case, research_predictions(item["per_image"]), "research")
+        plot_gt_vs_pred(case_dir / "gt_vs_pred_model.png", case, model_predictions(case, results_root), "model")
         log(f"[report] {case}: {len(item['tsv'])} trials, best "
             f"{(item['best'] or {}).get('result', {}).get('hits', '-')}/{(item['best'] or {}).get('result', {}).get('total', '-')}")
     comparison_dir = out_dir / "comparison"
@@ -588,6 +648,14 @@ def build_report(out_root="outputs/research_report", cases=None, research_root="
     plot_roi_vs_hit(comparison_dir / "roi_count_vs_hit.png", data)
     plot_importance_heatmap(comparison_dir / "param_importance_heatmap.png", cases, importance)
     plot_latency(comparison_dir / "latency.png", data, profiles_root)
+    data_sets = [c for c in cases if c not in GENERAL_CASES]          # one colour per data set
+    empty = pd.DataFrame(columns=["project", "GT", "prediction"])
+    plot_gt_vs_pred(comparison_dir / "gt_vs_pred_all.png", "全部資料集",
+                    pd.concat([research_predictions(data[c]["per_image"]) for c in data_sets] or [empty],
+                              ignore_index=True), "research")
+    plot_gt_vs_pred(comparison_dir / "gt_vs_pred_all_model.png", "全部資料集",
+                    pd.concat([model_predictions(c, results_root) for c in data_sets] or [empty],
+                              ignore_index=True), "model")
     summary = pd.DataFrame([case_summary(case, data[case]) for case in cases])
     lopo = lopo_table(data)
     deployed = deployed_table(cases, profiles_root)

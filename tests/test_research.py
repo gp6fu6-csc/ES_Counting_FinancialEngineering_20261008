@@ -131,7 +131,7 @@ class ReportTests(unittest.TestCase):
             self.assertFalse((out / "comparison" / "ring_inclusion.png").exists())   # no general_no_ring case
             self.assertTrue((out / "summary.md").is_file())
             pngs = sorted(out.rglob("*.png"))
-            self.assertEqual(len(pngs), 3 * len(cases) + 4)
+            self.assertEqual(len(pngs), 5 * len(cases) + 6)    # + GT vs Predict (research / model) per case and overall
             for path in pngs:
                 with Image.open(path) as image:
                     self.assertEqual(image.size, (3200, 1800), path)

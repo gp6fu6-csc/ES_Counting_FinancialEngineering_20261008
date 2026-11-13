@@ -322,7 +322,7 @@ def cmd_report(args):
     from escount.research.report import build_report
 
     build_report(args.out, args.cases, args.research_root, args.candidates_root, args.storage,
-                 args.profiles_root, args.config)
+                 args.profiles_root, args.config, results_root=args.results_root)
     return 0
 
 
@@ -517,6 +517,8 @@ def build_parser():
     report = sub.add_parser("report", help="presentation report -> outputs/research_report/<timestamp>/ + latest/")
     report.add_argument("--out", default="outputs/research_report", help="report root (default: outputs/research_report)")
     report.add_argument("--cases", nargs="+", help="case ids (default: projects not in excluded_projects + general)")
+    report.add_argument("--results-root", default="outputs/infer",
+                        help="escount infer outputs for the production-model GT vs Predict figures (default: outputs/infer)")
     _research_paths(report)
     report.set_defaults(func=cmd_report)
 

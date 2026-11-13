@@ -283,11 +283,13 @@ def build_reports(names, paths, args, log=print):
     log("\n=== Report (default track, cross-project) ===")
     run_stage(info, "default", lambda: build_report(
         paths["output"] / "report", default_cases, paths["research"] / "default", paths["candidates"] / "default",
-        f"sqlite:///{(paths['research'] / 'study_default.db').as_posix()}", paths["projects"], args.config, log), log)
+        f"sqlite:///{(paths['research'] / 'study_default.db').as_posix()}", paths["projects"], args.config, log,
+        paths["infer"]), log)
     for track in TRACKS:
         run_stage(info, track, lambda track=track: build_report(
             paths["output"] / f"report_{track}", list(names), paths["research"] / track, paths["candidates"] / track,
-            f"sqlite:///{(paths['research'] / f'study_{track}.db').as_posix()}", paths["projects"], args.config, log), log)
+            f"sqlite:///{(paths['research'] / f'study_{track}.db').as_posix()}", paths["projects"], args.config, log,
+            paths["infer"]), log)
     return info
 
 
