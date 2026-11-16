@@ -33,6 +33,12 @@ DEFAULT_OUTPUT = "outputs/case_study"
 MIN_IMAGES = 3
 OVERLAY_WIDTH = 1224
 TRACKS = ("mae", "exact_hit", "ensemble")          # extra AutoResearch tracks (the "default" track is separate)
+TRACK_NOTES = {   # first line of each report: which track it is and what that track optimises
+    "default": "本報告：default 軌｜目標＝完全命中率最高（同分取 ROI 少、速度快）｜模型 baseline / ridge / svr / xgb / lgbm｜含通用模型",
+    "mae": "本報告：mae 軌｜目標＝平均誤差 MAE 最小（不要求剛好命中）｜模型 baseline / ridge / svr / xgb / lgbm",
+    "exact_hit": "本報告：exact_hit 軌｜目標＝命中張數最多（同分取 MAE 小）｜另含 Soft Exact-Hit Loss 與離散殘差分類器，共 9 種模型",
+    "ensemble": "本報告：ensemble 軌｜目標＝多模型投票 / 堆疊（xgb、lgbm、ridge 組合）的命中率",
+}
 STAGES = ("template", "prepare", "train", "select_rois", "all_rois")
 
 
@@ -284,12 +290,12 @@ def build_reports(names, paths, args, log=print):
     run_stage(info, "default", lambda: build_report(
         paths["output"] / "report", default_cases, paths["research"] / "default", paths["candidates"] / "default",
         f"sqlite:///{(paths['research'] / 'study_default.db').as_posix()}", paths["projects"], args.config, log,
-        paths["infer"]), log)
+        paths["infer"], track_note=TRACK_NOTES["default"]), log)
     for track in TRACKS:
         run_stage(info, track, lambda track=track: build_report(
             paths["output"] / f"report_{track}", list(names), paths["research"] / track, paths["candidates"] / track,
             f"sqlite:///{(paths['research'] / f'study_{track}.db').as_posix()}", paths["projects"], args.config, log,
-            paths["infer"], study_suffix=f"_{track}"), log)
+            paths["infer"], study_suffix=f"_{track}", track_note=TRACK_NOTES[track]), log)
     return info
 
 

@@ -517,9 +517,10 @@ def excluded_decision(config):
 
 
 def write_summary(path, created, summary, comparison, lopo, decision, config, files=COMPARISON_FILES,
-                  deployed=None):
+                  deployed=None, track_note=""):
     deployed = pd.DataFrame() if deployed is None else deployed
     lines = ["# ESCounting V4 研究報告 (autoresearch)", "",
+             *([f"**{track_note}**", ""] if track_note else []),
              f"產生時間：{created}", "",
              "- 唯一指標：exact hit rate，round(預測) == GT（無 MAE、無 ±1 容許）。",
              "- 排序：(-hit_rate, roi_count, latency_ms)；驗證：LOIO（General 另記 LOPO），評估器固定不改。",
@@ -554,7 +555,7 @@ def _table(frame):
 
 
 def write_html(path, out_dir, created, cases, summary, comparison, lopo, decision, files=COMPARISON_FILES,
-               deployed=None):
+               deployed=None, track_note=""):
     deployed = pd.DataFrame() if deployed is None else deployed
     style = ("body{font-family:'Microsoft JhengHei',sans-serif;margin:24px;background:#fafafa;color:#222}"
              "table{border-collapse:collapse;margin:8px 0 16px;font-size:14px}"
@@ -563,7 +564,9 @@ def write_html(path, out_dir, created, cases, summary, comparison, lopo, decisio
              "padding:8px;overflow:auto;max-height:420px}section{margin-bottom:40px}")
     parts = ["<!DOCTYPE html>", '<html lang="zh-Hant"><head><meta charset="utf-8">',
              "<title>ESCounting V4 研究報告</title>", f"<style>{style}</style></head><body>",
-             "<h1>ESCounting V4 研究報告 (autoresearch)</h1>", f"<p>產生時間：{html.escape(created)}</p>",
+             "<h1>ESCounting V4 研究報告 (autoresearch)</h1>",
+             *([f"<p><strong>{html.escape(track_note)}</strong></p>"] if track_note else []),
+             f"<p>產生時間：{html.escape(created)}</p>",
              "<p>唯一指標 exact hit rate (round(預測) == GT)；排序 (-hit_rate, roi_count, latency_ms)；"
              "LOIO（General 另記 LOPO）；ROI 每列距有效區域邊界 ≥ 50 px、D &gt; 2w/3、垂直方向不平滑。</p>",
              f"<p>{html.escape(SCOPE_NOTE)}</p>",
@@ -603,7 +606,8 @@ def _out_dir(out_root, timestamp):
 
 def build_report(out_root="outputs/research_report", cases=None, research_root="research",
                  candidates_root="candidates", storage=DEFAULT_STORAGE, profiles_root="outputs/projects",
-                 config_path="configs/general.json", log=print, results_root="outputs/infer", study_suffix=""):
+                 config_path="configs/general.json", log=print, results_root="outputs/infer", study_suffix="",
+                 track_note=""):
     """Write the timestamped report directory and refresh <out_root>/latest/. Returns the timestamp dir.
     cases=None -> default_cases(config): excluded_projects are left out."""
     config = load_general_config(config_path)
@@ -668,8 +672,10 @@ def build_report(out_root="outputs/research_report", cases=None, research_root="
     lopo = lopo_table(data)
     deployed = deployed_table(cases, profiles_root)
     stamp = created.isoformat(timespec="seconds")
-    write_summary(out_dir / "summary.md", stamp, summary, comparison, lopo, decision, config, files, deployed)
-    write_html(out_dir / "report.html", out_dir, stamp, cases, summary, comparison, lopo, decision, files, deployed)
+    write_summary(out_dir / "summary.md", stamp, summary, comparison, lopo, decision, config, files, deployed,
+                  track_note)
+    write_html(out_dir / "report.html", out_dir, stamp, cases, summary, comparison, lopo, decision, files, deployed,
+               track_note)
     latest = Path(out_root) / "latest"
     if latest.exists():
         shutil.rmtree(latest)
