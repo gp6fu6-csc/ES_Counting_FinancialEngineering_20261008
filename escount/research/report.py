@@ -69,6 +69,12 @@ def short(case):
     return case.rsplit("_", 1)[-1] if len(case) > 18 and case not in GENERAL_CASES else case
 
 
+def case_ticks(ax, positions, cases):
+    """Case names on the x axis, rotated 35 deg and right-aligned so long names never overlap."""
+    ax.set_xticks(positions, [short(c) for c in cases], rotation=35, ha="right", rotation_mode="anchor",
+                  fontsize=13 if len(cases) > 6 else 15)
+
+
 # ---------------------------------------------------------------- data access
 def case_data(case, research_root, candidates_root, storage, profiles_root, study_suffix=""):
     best_path = Path(candidates_root) / case / BEST_NAME
@@ -204,7 +210,8 @@ def plot_sensitivity(path, case, study, values):
         else:
             labels = sorted({str(x) for x in xs})
             positions = [labels.index(str(x)) for x in xs]
-            ax.set_xticks(range(len(labels)), labels)
+            ax.set_xticks(range(len(labels)), labels, **({"rotation": 30, "ha": "right", "rotation_mode": "anchor",
+                                                          "fontsize": 12} if len(labels) > 5 else {}))
         ax.scatter(positions, ys, s=70, c=["#d62728" if k else "#1f77b4" for k in kept], alpha=0.85)
         ax.set_title(name)
         ax.set_ylabel("hit rate")
@@ -256,7 +263,7 @@ def plot_project_vs_general(path, table, projects):
             ax.bar(xs, ys, width, yerr=[low, high], capsize=4, color=COLOURS[index], label=f"{model} {scheme}")
             for x, y, top, label in zip(xs, ys, high, labels):
                 ax.text(x, y + top + 0.02, label, ha="center", va="bottom", fontsize=11, rotation=90)
-    ax.set_xticks(range(len(projects)), [short(p) for p in projects])
+    case_ticks(ax, range(len(projects)), projects)
     ax.set_ylabel("exact hit rate (誤差線 = Wilson 95% CI)")
     ax.set_ylim(0, 1.35)
     no_ring = any(model == "general_no_ring" for _, model, _ in series)
@@ -272,7 +279,6 @@ def plot_ring_inclusion(path, decision):
     fig, axes = figures.new_figure(1, 2)
     for ax, scheme in zip(axes, ("LOIO", "LOPO")):
         rows = [r for r in decision["rows"] if r["scheme"] == scheme]
-        names = [short(r["project"]) for r in rows]
         positions = np.arange(len(rows))
         for offset, key, label, colour in ((-0.2, "with_ring", "general (含 Ring)", "#ff7f0e"),
                                            (0.2, "without_ring", "general_no_ring (不含 Ring)", "#2ca02c")):
@@ -280,7 +286,7 @@ def plot_ring_inclusion(path, decision):
             ax.bar(positions + offset, values, 0.4, color=colour, label=label)
             for x, r in zip(positions + offset, rows):
                 ax.text(x, r[key]["hit_rate"] + 0.02, f"{r[key]['hits']}/{r[key]['total']}", ha="center", fontsize=12)
-        ax.set_xticks(positions, names)
+        case_ticks(ax, positions, [r["project"] for r in rows])
         ax.set_ylim(0, 1.35)
         ax.set_title(f"{scheme}：其他專案的命中率")
         ax.grid(axis="y", alpha=0.3)
@@ -310,7 +316,7 @@ def plot_roi_vs_hit(path, data):
     ax.set_ylim(-0.03, 1.08)
     ax.set_title("ROI 數量 vs 命中率（所有 trial；★ = 各案例最佳）")
     ax.grid(alpha=0.3)
-    ax.legend(loc="lower right")
+    ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5))     # outside the axes: never covers points
     return figures.save(fig, path)
 
 
@@ -376,7 +382,7 @@ def plot_importance_heatmap(path, cases, importance):
             value = matrix[row, column]
             ax.text(column, row, "—" if np.isnan(value) else f"{value:.2f}", ha="center", va="center", fontsize=11,
                     color="white" if not np.isnan(value) and value < 0.5 * np.nanmax(matrix) else "black")
-    ax.set_xticks(range(len(cases)), [short(c) for c in cases])
+    case_ticks(ax, range(len(cases)), cases)
     ax.set_yticks(range(len(params)), params)
     fig.colorbar(image, ax=ax, label="fANOVA importance")
     ax.set_title("參數重要度熱圖 (param × case；— = 無法估計 / 不適用)")
@@ -391,7 +397,7 @@ def plot_latency(path, data, profiles_root):
         axes[0].bar(range(len(cases)), values, color="#1f77b4")
         for x, value in enumerate(values):
             axes[0].text(x, value, f"{value:.2f}", ha="center", va="bottom", fontsize=12)
-        axes[0].set_xticks(range(len(cases)), [short(c) for c in cases], rotation=15, ha="right")
+        case_ticks(axes[0], range(len(cases)), cases)
     else:
         axes[0].text(0.5, 0.5, "尚無研究結果", ha="center", transform=axes[0].transAxes)
     axes[0].set_ylabel("ms / image")
@@ -408,7 +414,7 @@ def plot_latency(path, data, profiles_root):
         axes[1].bar(positions - 0.2, [bench[n][0] for n in names], 0.4, label="median", color="#2ca02c")
         axes[1].bar(positions + 0.2, [bench[n][1] for n in names], 0.4, label="max", color="#d62728")
         axes[1].axhline(1000, color="black", linestyle="--", label="1 s 上限")
-        axes[1].set_xticks(positions, [short(n) for n in names], rotation=15, ha="right")
+        case_ticks(axes[1], positions, names)
         axes[1].legend()
     else:
         axes[1].text(0.5, 0.5, "無 benchmark.json (escount benchmark)", ha="center", transform=axes[1].transAxes)
