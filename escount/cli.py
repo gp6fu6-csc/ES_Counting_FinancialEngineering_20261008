@@ -322,7 +322,7 @@ def cmd_report(args):
     from escount.research.report import build_report
 
     build_report(args.out, args.cases, args.research_root, args.candidates_root, args.storage,
-                 args.profiles_root, args.config, results_root=args.results_root)
+                 args.profiles_root, args.config, results_root=args.results_root, study_suffix=args.study_suffix)
     return 0
 
 
@@ -436,6 +436,8 @@ def build_parser():
     batch.add_argument("--infer", action="store_true",
                        help="also analyse every image of each project (training page step 4) into --results-root")
     batch.add_argument("--results-root", help="infer outputs (default: <output>/infer)")
+    batch.add_argument("--report-only", action="store_true",
+                       help="only rebuild the 4 reports + summary from the results already in --output")
     batch.add_argument("--dry-run", action="store_true", help="list what would be processed, write nothing")
     batch.set_defaults(func=cmd_batch)
 
@@ -519,6 +521,8 @@ def build_parser():
     report.add_argument("--cases", nargs="+", help="case ids (default: projects not in excluded_projects + general)")
     report.add_argument("--results-root", default="outputs/infer",
                         help="escount infer outputs for the production-model GT vs Predict figures (default: outputs/infer)")
+    report.add_argument("--study-suffix", default="",
+                        help="Optuna study name suffix: '' (default track) or _mae / _exact_hit / _ensemble")
     _research_paths(report)
     report.set_defaults(func=cmd_report)
 

@@ -289,7 +289,7 @@ def build_reports(names, paths, args, log=print):
         run_stage(info, track, lambda track=track: build_report(
             paths["output"] / f"report_{track}", list(names), paths["research"] / track, paths["candidates"] / track,
             f"sqlite:///{(paths['research'] / f'study_{track}.db').as_posix()}", paths["projects"], args.config, log,
-            paths["infer"]), log)
+            paths["infer"], study_suffix=f"_{track}"), log)
     return info
 
 
@@ -365,6 +365,17 @@ def run_batch(args, log=print):
         return 0
     if not projects:
         raise SystemExit("escount batch: no usable project found")
+    if args.report_only:        # rebuild the 4 reports + summary from existing results (no training / research)
+        names = [p["name"] for p in projects if (paths["projects"] / p["name"] / "model" / "manifest.json").is_file()]
+        if not names:
+            raise SystemExit(f"escount batch: no trained project under {paths['projects']}")
+        reports = build_reports(names, paths, args, log)
+        previous = output / "summary.json"           # keep the stage records of the run that trained the models
+        results = json.loads(previous.read_text(encoding="utf-8")).get("projects", {}) if previous.is_file() else {}
+        write_summary(results, {"reports": reports}, names, paths, args.template, skipped)
+        failed = [k for k, v in reports.items() if v.get("status") == "failed"]
+        log(f"\nreports rebuilt for {len(names)} projects ({len(failed)} failed) -> {(output / 'summary.md').resolve()}")
+        return 1 if failed else 0
     output.mkdir(parents=True, exist_ok=True)
 
     results = {project["name"]: {} for project in projects}

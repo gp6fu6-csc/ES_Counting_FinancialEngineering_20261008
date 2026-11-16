@@ -70,7 +70,7 @@ def short(case):
 
 
 # ---------------------------------------------------------------- data access
-def case_data(case, research_root, candidates_root, storage, profiles_root):
+def case_data(case, research_root, candidates_root, storage, profiles_root, study_suffix=""):
     best_path = Path(candidates_root) / case / BEST_NAME
     best = json.loads(best_path.read_text(encoding="utf-8")) if best_path.is_file() else None
     per_image_path = Path(candidates_root) / case / PER_IMAGE_NAME
@@ -80,7 +80,7 @@ def case_data(case, research_root, candidates_root, storage, profiles_root):
     tsv["roi_count"] = pd.to_numeric(tsv["roi_count"], errors="coerce")
     tsv["latency_ms"] = pd.to_numeric(tsv["latency_ms"], errors="coerce")
     adopted = adopted_hash(case, profiles_root)
-    return {"case": case, "best": best, "per_image": per_image, "tsv": tsv, "study": load_study(case, storage),
+    return {"case": case, "best": best, "per_image": per_image, "tsv": tsv, "study": load_study(case + study_suffix, storage),
             "adopted": best is not None and adopted == best["config_hash"], "adopted_hash": adopted}
 
 
@@ -597,7 +597,7 @@ def _out_dir(out_root, timestamp):
 
 def build_report(out_root="outputs/research_report", cases=None, research_root="research",
                  candidates_root="candidates", storage=DEFAULT_STORAGE, profiles_root="outputs/projects",
-                 config_path="configs/general.json", log=print, results_root="outputs/infer"):
+                 config_path="configs/general.json", log=print, results_root="outputs/infer", study_suffix=""):
     """Write the timestamped report directory and refresh <out_root>/latest/. Returns the timestamp dir.
     cases=None -> default_cases(config): excluded_projects are left out."""
     config = load_general_config(config_path)
@@ -607,7 +607,9 @@ def build_report(out_root="outputs/research_report", cases=None, research_root="
     created = datetime.now()
     out_dir = _out_dir(out_root, created.strftime("%Y%m%d_%H%M%S"))
     out_dir.mkdir(parents=True)
-    data = {case: case_data(case, research_root, candidates_root, storage, profiles_root) for case in cases}
+    # study_suffix: the mae / exact_hit / ensemble tracks name their Optuna studies "<case>_<track>"
+    data = {case: case_data(case, research_root, candidates_root, storage, profiles_root, study_suffix)
+            for case in cases}
     importance = {}
     for case, item in data.items():
         case_dir = out_dir / case

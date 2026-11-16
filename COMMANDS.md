@@ -364,7 +364,12 @@ powershell -Command "Get-Content outputs\case_study_20261113\batch_log_deep.txt 
 uv run escount serve --root Data/Case_Study --profiles-root outputs/case_study_20261113/projects --features-root outputs/case_study_20261113/features --results-root outputs/case_study_20261113/infer
 uv run escount infer --project press-Red-20 --profiles-root outputs/case_study_20261113/projects --input <影像或資料夾> --output outputs/case_study_20261113/infer_new
 ```
-* 只更新報告（不重跑研究），例如 default 軌：
+* 只重建 4 份報告 + summary（不重新訓練、不重跑研究；沿用該次輸出的結果）：
+```cmd
+uv run escount batch --template press-Red-70 --output outputs/case_study_20261113 --report-only
+```
+* 單獨用 `escount report` 產生 mae / exact_hit / ensemble 軌報告時，要加 `--study-suffix _mae`（或 `_exact_hit`、`_ensemble`），否則參數重要度 / 敏感度圖會顯示「尚無 Optuna study」（這三軌的研究名稱是 `<專案>_<軌>`）。batch 會自動帶入。
+* 只更新報告（手動指定路徑），例如 default 軌：
 ```cmd
 uv run escount report --out outputs/case_study_20261113/report --cases press-Red-20 press-Red-40 press-Red-70 press-Red-max press-White-18 press-White-28 press-White-45 press-White-60 unpress-Red-70 unpress-White-45 general --research-root outputs/case_study_20261113/research/default --candidates-root outputs/case_study_20261113/candidates/default --storage "sqlite:///outputs/case_study_20261113/research/study_default.db" --profiles-root outputs/case_study_20261113/projects --results-root outputs/case_study_20261113/infer
 ```
