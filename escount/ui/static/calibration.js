@@ -3,8 +3,10 @@
 const MAX_WIDTH = 1224;           // downscaled preview width (px)
 const COLORS = { valid: "#26a69a", centre: "#ff9f43", roi: "#4c8dff", selected: "#f0b90b",
                  strip: "rgba(240, 185, 11, 0.35)", stripLine: "#f0b90b", stack: "#d16ff0" };
-const images = { original: null, rotated: null, rotatedAngle: null, overlay: null };   // bitmaps kept out of Vue reactivity
+const images = { original: null, rotated: null, rotatedAngle: null, overlay: null, ratio: null };   // bitmaps kept out of Vue reactivity
 
+const RATIO_COLORS = { "10": "#ff3b30", "5": "#4c8dff", "1": "#26a69a" };
+const emptyRatio = () => ({ left: { 10: [], 5: [], 1: [] }, right: { 10: [], 5: [], 1: [] } });
 Vue.createApp({
   data() {
     return {
@@ -14,7 +16,12 @@ Vue.createApp({
       strips: { n: 4, w: 16, pitch: 30, side_margin: 50, x_offset: 0 },
       tab: "mask", result: null, error: "", message: "", busy: false, drag: null, requestId: 0,
       hasMask: false, maskEditing: false, maskPoints: [], maskClosed: false, hover: null,
+      hasRatio: false, profileAngle: null, ratioPoints: emptyRatio(), ratioList: { side: "left", kind: "10" },
+      ratioSelected: -1, ratioRightAt: 0,
     };
+  },
+  computed: {
+    ratioAngle() { return this.profileAngle ?? (this.result ? this.result.angle_deg : 0); },   // project.json angle first
   },
   watch: {
     strips: { deep: true, handler() { this.schedulePreview(); } },
@@ -24,7 +31,7 @@ Vue.createApp({
     try {
       this.cases = (await ESC.api("/calibration/cases")).cases;
       const query = new URLSearchParams(location.search);              // deep link: ?case=<id>&tab=strips
-      if (query.get("tab") === "strips") this.tab = "strips";
+      if (["strips", "ratio"].includes(query.get("tab"))) this.tab = query.get("tab");
       const wanted = query.get("case");
       if (wanted && this.cases.includes(wanted)) { this.caseId = wanted; await this.loadCase(); }
     } catch (e) { this.error = e.message; }
@@ -34,7 +41,8 @@ Vue.createApp({
     saveKey() { ESC.setApiKey(this.apiKey); },
 
     async loadCase() {
-      this.error = this.message = ""; this.result = null; images.original = images.rotated = images.overlay = null;
+      this.error = this.message = ""; this.result = null; images.original = images.rotated = images.overlay = images.ratio = null;
+      this.ratioPoints = emptyRatio(); this.ratioSelected = -1;
       this.maskPoints = []; this.maskClosed = false; this.hover = null;
       try {
         const info = await ESC.api(`/calibration/${encodeURIComponent(this.caseId)}/images`);
@@ -43,11 +51,16 @@ Vue.createApp({
           defaultRois: info.default_rois, minSide: info.min_side, minMargin: info.min_side_margin,
           strips: Object.assign({}, info.strips) });
         const profile = info.profile;
+        this.hasRatio = info.images.includes("ratio.png");
+        this.profileAngle = profile ? profile.angle_deg : null;
+        const saved = (await ESC.api(`/calibration/${encodeURIComponent(this.caseId)}/ratio`)).record;
+        if (saved) this.ratioPoints = { ...emptyRatio(), ...saved.points };
         this.reference = profile && info.images.includes(profile.reference_image) ? profile.reference_image : info.reference;
         this.rois = (profile && profile.rois.length ? profile.rois : info.default_rois).map((r) => ({ ...r }));
         this.side = this.rois.length ? this.rois[0].side : info.default_side;
         this.selected = Math.floor(this.rois.length / 2);
         await this.loadReference();
+        if (this.tab === "ratio") await this.loadRatio();
       } catch (e) { this.error = e.message; }
     },
 
@@ -99,6 +112,7 @@ Vue.createApp({
       this.message = ""; this.busy = true;
       try {
         const saved = await ESC.api(`/calibration/${encodeURIComponent(this.caseId)}/save`, { json: this.body() });
+        this.profileAngle = saved.profile.angle_deg; images.ratio = null;
         this.message = `已寫入 ${saved.path}\n品質：${saved.quality_status}\n${saved.note}`;
         this.error = "";
       } catch (e) { this.error = e.message; } finally { this.busy = false; }
@@ -106,7 +120,40 @@ Vue.createApp({
 
     // ---------------------------------------------------------------- ROI editing
     changed() { this.draw(); this.schedulePreview(); },
-    setTab(tab) { this.tab = tab; this.draw(); },
+    setTab(tab) { this.tab = tab; this.draw(); if (tab === "ratio") this.loadRatio(); },
+    // ---------------------------------------------------------------- (c) height reference scale on ratio.png
+    async loadRatio() {
+      if (!this.hasRatio || (images.ratio && images.ratio.angle === this.ratioAngle)) return;
+      try {
+        const angle = this.ratioAngle;
+        const bitmap = await ESC.bitmap(
+          `/calibration/${encodeURIComponent(this.caseId)}/image/ratio.png?angle=${angle}&max_width=${MAX_WIDTH}`);
+        images.ratio = { bitmap, angle };
+        this.draw();
+      } catch (e) { this.error = e.message; }
+    },
+    addRatioPoint(p) {
+      const list = this.ratioPoints[this.ratioList.side][this.ratioList.kind];
+      const at = this.ratioSelected >= 0 ? this.ratioSelected + 1 : list.length;   // after the selected point
+      list.splice(at, 0, [Math.round(p.x), Math.round(p.y)]);
+      this.ratioSelected = at; this.draw();
+    },
+    ratioRight(side, kind, i) {                       // right double click on the selected point removes it
+      if (this.ratioList.side !== side || this.ratioList.kind !== kind || this.ratioSelected !== i) return;
+      const now = Date.now();
+      if (now - this.ratioRightAt > 500) { this.ratioRightAt = now; return; }
+      this.ratioRightAt = 0;
+      this.ratioPoints[side][kind].splice(i, 1);
+      this.ratioSelected = -1; this.draw();
+    },
+    async saveRatio() {
+      this.message = ""; this.busy = true;
+      try {
+        const saved = await ESC.api(`/calibration/${encodeURIComponent(this.caseId)}/ratio`,
+                                    { json: { angle_deg: this.ratioAngle, points: this.ratioPoints } });
+        this.message = `已寫入 ${saved.path}`; this.error = "";
+      } catch (e) { this.error = e.message; } finally { this.busy = false; }
+    },
     shiftAll(dx) { this.rois.forEach((r) => { r.x += dx; }); this.changed(); },
     middle() { return this.rois[Math.floor(this.rois.length / 2)]; },
     shiftMiddle(dy) { if (this.rois.length) { this.middle().y += dy; this.changed(); } },
@@ -171,6 +218,10 @@ Vue.createApp({
         this.draw();
         return;
       }
+      if (this.tab === "ratio") {
+        if (event.button === 0 && images.ratio) this.addRatioPoint(this.toImage(event));
+        return;
+      }
       if (this.tab !== "rotation" || !images.original) return;
       const p = this.toImage(event);
       const index = this.rois.findIndex((r) => p.x >= r.x && p.x <= r.x + r.side && p.y >= r.y && p.y <= r.y + r.side);
@@ -213,6 +264,7 @@ Vue.createApp({
       const canvas = this.$refs.canvas;
       let bitmap = this.tab === "strips" && images.rotated ? images.rotated : images.original;
       if (this.tab === "mask" && !this.maskEditing && images.overlay) bitmap = images.overlay;
+      if (this.tab === "ratio") bitmap = images.ratio ? images.ratio.bitmap : null;
       const ctx = canvas.getContext("2d");
       if (!bitmap) { ctx.clearRect(0, 0, canvas.width, canvas.height); return; }
       canvas.width = bitmap.width; canvas.height = bitmap.height;
@@ -221,6 +273,7 @@ Vue.createApp({
       ctx.lineWidth = 2; ctx.font = "bold 18px sans-serif";
       if (this.tab === "mask") this.drawMask(ctx, s);
       else if (this.tab === "rotation") this.drawRotation(ctx, s, canvas);
+      else if (this.tab === "ratio") this.drawRatio(ctx, s);
       else this.drawStrips(ctx, s, canvas);
     },
     drawMask(ctx, s) {
@@ -233,6 +286,20 @@ Vue.createApp({
       ctx.strokeStyle = COLORS.valid; ctx.lineWidth = 2; ctx.stroke();
       ctx.fillStyle = "#ff3b30";
       pts.forEach((p) => { ctx.beginPath(); ctx.arc(p.x * s, p.y * s, 5, 0, 2 * Math.PI); ctx.fill(); });
+    },
+    drawRatio(ctx, s) {
+      for (const side of ["left", "right"]) {
+        for (const kind of ["10", "5", "1"]) {
+          ctx.fillStyle = RATIO_COLORS[kind];
+          this.ratioPoints[side][kind].forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x * s, y * s, 4, 0, 2 * Math.PI); ctx.fill(); });
+        }
+      }
+      const point = this.ratioPoints[this.ratioList.side][this.ratioList.kind][this.ratioSelected];
+      if (!point) return;
+      const [x, y] = [point[0] * s, point[1] * s];   // arrow from the right pointing left at the selected point
+      ctx.strokeStyle = ctx.fillStyle = COLORS.selected; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(x + 90, y); ctx.lineTo(x + 8, y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 6, y); ctx.lineTo(x + 20, y - 8); ctx.lineTo(x + 20, y + 8); ctx.closePath(); ctx.fill();
     },
     drawRotation(ctx, s, canvas) {
       if (this.validRegion) {

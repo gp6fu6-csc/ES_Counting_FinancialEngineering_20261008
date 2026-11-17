@@ -11,6 +11,7 @@ Web UI (static, offline, vendored Vue 3 + ECharts) at /ui/calibration.html (PDF 
   GET  /calibration/cases, GET /calibration/{case}/images, GET /calibration/{case}/image/{name}
   POST /calibration/preview        ROIs + strips -> angle, residuals, quality, strip overlay (nothing written)
   POST /calibration/{case}/save    same validation, then project.json + background_BW_rotated.png
+  GET/POST /calibration/{case}/ratio   clicked scale points of ratio.png <-> height_model.json (optional height model)
 and /ui/results.html (PDF p13-14) with
   GET  /results/{case}/images      images + whether `escount infer` outputs are complete
   POST /preview                    InferenceEngine with overridden MACD / KD params -> N_pred + chart series
@@ -47,6 +48,7 @@ from escount.calibration.calibrate import (
 )
 from escount.calibration.rotation_correction import normalize_mask, rotate_image
 from escount.es_counting import list_images, pick_reference, read_gray, read_mask
+from escount.height import MODEL_NAME, RATIO_NAME, read_points, save_points
 from escount.inference.engine import InferenceEngine
 from escount.signals.roi_bank import MIN_SIDE_MARGIN, build_roi_bank, check_geometry, stack_rows
 
@@ -173,7 +175,10 @@ class ServerState:
 
     def case_image(self, case, name):
         """Path of an analysable image of the case (background files are never served)."""
-        images = {path.name: path for path in list_images(self.case_dir(case, need_mask=False))}
+        folder = self.case_dir(case, need_mask=False)
+        images = {path.name: path for path in list_images(folder)}
+        if (folder / RATIO_NAME).is_file():
+            images[RATIO_NAME] = folder / RATIO_NAME
         if name not in images:
             raise HTTPException(404, f"image {name!r} not found in project {case!r}")
         return images[name]
@@ -314,6 +319,10 @@ class PreviewCalibrationRequest(CalibrationBody):
     case: str
 
 
+class RatioBody(BaseModel):
+    """Clicked scale points in rotated-image pixels: {left|right: {"10"|"5"|"1": [[x, y], ...]}}."""
+    angle_deg: float = Field(ge=-45, le=45)
+    points: dict[str, dict[str, list[tuple[float, float]]]]
 class MaskBody(BaseModel):
     """Valid-region polygon in full-resolution image pixels (x, y), at least 3 vertices."""
     points: list[tuple[float, float]] = Field(min_length=3, max_length=2000)
@@ -401,12 +410,14 @@ def preview_payload(engine, result, overrides):
         if disp_slot is not None:
             roi_data["y0"] = int(disp_slot.y0)
             roi_data["y1"] = int(disp_slot.y1)
+            roi_data.update(engine.edge_fields(disp_slot.y0, disp_slot.y1))
         rois.append({**roi_data, "signal": _series(signal),
                      "highs": [int(i) for i in high_idx], "lows": [int(i) for i in low_idx],
                      "label": panel["label"], "slice_image": slice_b64, **charts})
     record = {key: result[key] for key in ("image", "case", "model", "model_case", "method", "model_type", "N_pred",
                                            "gt", "hit", "timings_ms", "roi_mode", "all_rois_ensemble") if key in result}
     marks = engine.marks
+    record["has_height_model"] = engine.height_model is not None
     return jsonable({**record, "params": params, "marks": {"name": marks.name, "params": asdict(marks.params),
                                                            "gate": marks.gate}, "rois": rois})
 
@@ -536,7 +547,8 @@ def create_app(config=ServerConfig()):
         profile_path = state.profiles_root / case / PROFILE_NAME
         profile = json.loads(ProjectProfile.load(profile_path).to_json()) if profile_path.is_file() else None
         config = CalibrationConfig()
-        return jsonable({"case": case, "images": [path.name for path in paths], "reference": reference,
+        return jsonable({"case": case, "reference": reference,
+                         "images": [path.name for path in paths] + ([RATIO_NAME] if (case_dir / RATIO_NAME).is_file() else []),
                          "has_mask": has_mask,
                          "image_size": image_size,
                          "valid_region": region, "default_rois": defaults,
@@ -617,6 +629,22 @@ def create_app(config=ServerConfig()):
         return {"saved": True, "path": str(target.resolve()),
                 "note": "background_BW.png updated: re-run rotation calibration, prepare, train and select-rois"}
 
+    @app.get("/calibration/{case}/ratio")
+    def calibration_ratio(case: str):
+        """The saved scale points of the project (null record = no height model)."""
+        state.case_dir(case, need_mask=False)
+        return jsonable({"record": read_points(state.profiles_root / case)})
+    @app.post("/calibration/{case}/ratio")
+    def calibration_ratio_save(case: str, body: RatioBody):
+        """Validate the clicked points of ratio.png and write height_model.json."""
+        state.case_image(case, RATIO_NAME)
+        try:
+            record = save_points(state.profiles_root / case, RATIO_NAME, body.angle_deg, body.points)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        state.unload(case)                        # loaded engines hold the old height model
+        return jsonable({"saved": True, "path": str((state.profiles_root / case / MODEL_NAME).resolve()),
+                         "record": record})
     @app.post("/calibration/preview")
     def calibration_preview(body: PreviewCalibrationRequest):
         return _public_calibration(state.calibration(body.case, body))
@@ -717,7 +745,8 @@ def create_app(config=ServerConfig()):
                 "train": model_manifest.is_file(),
                 "select": selected,
                 "all_rois": all_rois,
-                "infer": (results / "predictions.csv").is_file()}
+                "infer": (results / "predictions.csv").is_file(),
+                "height": (state.profiles_root / case / MODEL_NAME).is_file()}
 
     def run_job(case, step, args):
         command = [sys.executable, "-m", "escount.cli", *args]

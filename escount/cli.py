@@ -56,6 +56,7 @@ def cmd_copy_params(args):
         PROFILE_NAME, CalibrationConfig, CalibrationQualityError, ProjectProfile, calibrate_project,
     )
     from escount.es_counting import MASK_NAME, list_images, read_gray
+    from escount.height import MODEL_NAME, copy_model
 
     source, target = resolve_project(args.source, args.data_root), resolve_project(args.target, args.data_root)
     profiles = Path(args.profiles_root)
@@ -95,6 +96,8 @@ def cmd_copy_params(args):
         raise SystemExit(f"escount copy-params: {error}") from error
     profile.strip_params = dict(source_profile.strip_params) if "strips" in what else old_strips
     profile.save(target_profile_path)
+    if "height" in what and copy_model(profiles / source.name, profiles / target.name):
+        print(f"copied height model {profiles / source.name / MODEL_NAME} -> {profiles / target.name / MODEL_NAME}")
     print(f"{source.name} -> {target.name}: copied {sorted(what)}; angle_deg={profile.angle_deg:+.4f} "
           f"quality_status={profile.quality_status} strip_params={profile.strip_params}")
     print("re-run prepare / train / select-rois / all-rois for the target (its trained models are refused until then)")
@@ -403,11 +406,11 @@ def build_parser():
     calibrate.add_argument("--reference", help="reference image file name (default: largest file-name number)")
     calibrate.set_defaults(func=cmd_calibrate)
 
-    copy = sub.add_parser("copy-params", help="copy mask / rotation ROIs / counting strips from one project to another")
+    copy = sub.add_parser("copy-params", help="copy mask / rotation ROIs / counting strips / height model from one project to another")
     copy.add_argument("--from", dest="source", required=True, help="source case id (must have project.json)")
     copy.add_argument("--to", dest="target", required=True, help="target case id or folder")
-    copy.add_argument("--what", nargs="+", choices=("mask", "rois", "strips"), default=["mask", "rois", "strips"],
-                      help="what to copy (default: all three)")
+    copy.add_argument("--what", nargs="+", choices=("mask", "rois", "strips", "height"), default=["mask", "rois", "strips", "height"],
+                      help="what to copy (default: all four)")
     copy.add_argument("--data-root", default="Data", help="root folder of case ids (default: Data)")
     copy.add_argument("--profiles-root", default="outputs/projects", help="profiles root (default: outputs/projects)")
     copy.set_defaults(func=cmd_copy_params)

@@ -392,7 +392,7 @@ def run(input_path, output_dir):
 
 BATCH_DATASETS = ("20260904-thinkness02_postition1", "T-type")
 MASK_NAME = "background_BW.png"
-EXCLUDED_IMAGE_NAMES = {"background.png", MASK_NAME}
+EXCLUDED_IMAGE_NAMES = {"background.png", MASK_NAME, "ratio.png"}   # ratio.png: height scale, see escount.height
 ROI_SEARCH_MAX_WIDTH = 1024
 ROI_SEARCH_MIN_WIDTH = 256
 ROI_SEARCH_STEP = 16

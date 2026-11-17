@@ -76,7 +76,11 @@
       <div class="roi-nav" v-if="result && result.rois.length">
         <button @click="moveRoi(-1)" :disabled="roiIndex === 0" aria-label="上一組 ROI">◀</button>
         <span>ROI <strong>N{{ roi.index }}</strong> / {{ result.rois.length }} · {{ roi.label }} ·
-          N{{ roi.index }}_pred = <strong>{{ roi.prediction.toFixed(2) }}</strong></span>
+          N{{ roi.index }}_pred = <strong>{{ roi.prediction.toFixed(2) }}</strong> ·
+          頂部 y={{ roi.y_top }} · 底部 y={{ roi.y_bottom }}</span>
+        <label class="height-toggle" :title="result.has_height_model ? '' : '此專案沒有像素-高度比例預測模型'">
+          <input type="checkbox" v-model="showHeight" :disabled="!result.has_height_model"> 高度</label>
+        <span v-if="showHeight && result.has_height_model" class="height-value">{{ heightText }}</span>
         <button @click="moveRoi(1)" :disabled="roiIndex >= result.rois.length - 1" aria-label="下一組 ROI">▶</button>
       </div>
       <div class="params">
@@ -106,7 +110,7 @@
           <span class="align-hint">【1:1 像素對齊】與下方訊號波形及指標圖橫軸完全同向</span>
         </div>
         <div class="roi-slice-track" ref="sliceTrack">
-          <div class="roi-slice-viewport" ref="sliceViewport">
+          <div class="roi-slice-viewport" :class="{ edges: showHeight && result.has_height_model }" ref="sliceViewport">
             <img :src="roi.slice_image" class="roi-slice-img" ref="sliceImg" alt="ROI 橫置切片影像">
           </div>
           <div class="roi-slice-cursor" ref="sliceCursor"></div>

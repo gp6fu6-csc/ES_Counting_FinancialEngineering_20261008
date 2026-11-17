@@ -30,7 +30,7 @@
       </label>
       <div class="list" role="listbox" aria-label="影像清單">
         <button v-for="name in images" :key="name" class="item" role="option" :aria-selected="name === reference"
-                :class="{ active: name === reference }" @click="reference = name">
+                :class="{ active: name === reference }" @click="name === 'ratio.png' ? setTab('ratio') : (reference = name)">
           <span>{{ name }}</span><span v-if="name === loadedReference" class="mark">參考</span>
         </button>
       </div>
@@ -46,6 +46,8 @@
                 @click="setTab('rotation')">(a) 旋轉校正 ROI</button>
         <button role="tab" :aria-selected="tab === 'strips'" :class="{ active: tab === 'strips' }"
                 @click="setTab('strips')">(b) 計片條帶</button>
+        <button role="tab" :aria-selected="tab === 'ratio'" :class="{ active: tab === 'ratio' }"
+                @click="setTab('ratio')">(c) 比例校正</button>
       </div>
       <canvas ref="canvas" tabindex="0" width="1224" height="1024"
               :aria-label="tab === 'mask' ? '參考影像與有效區域遮罩，圈選模式下左鍵加節點、右鍵取消上一節點、左鍵連點兩下確定' : tab === 'rotation' ? '參考影像與旋轉校正 ROI，可拖曳或用方向鍵移動選取的 ROI' : '轉正影像與計片條帶，左右方向鍵調整水平位移'"
@@ -57,6 +59,7 @@
         <template v-else>此資料夾尚無 background_BW.png，請按「開始圈選」建立。</template>
       </p>
       <p class="hint" v-else-if="tab === 'rotation'">滑鼠拖曳 ROI；點選後按方向鍵依「位移量」移動。綠框 = 有效區域，橘線 = 有效區中線。</p>
+      <p class="hint" v-else-if="tab === 'ratio'">ratio.png 依旋轉校正角度 {{ fmt(ratioAngle) }}° 轉正；先點右側列表框，再點圖上的比例尺圖示（詳見「規則說明」）。</p>
       <p class="hint" v-else>顯示依預覽角度轉正後的影像；黃色 = 計片條帶，紫線 = 堆疊範圍。←/→ 依「位移量」調整水平位移。</p>
     </section>
 
@@ -93,7 +96,7 @@
         </div>
         <button @click="resetRois">恢復預設 ROI（有效區正中 3 組）</button>
       </template>
-      <template v-else>
+      <template v-else-if="tab === 'strips'">
         <label class="field"><span>ROI 數量 N</span><input type="number" min="1" max="64" v-model.number="strips.n"></label>
         <label class="field"><span>ROI 寬度 w (px)</span><input type="number" min="1" v-model.number="strips.w"></label>
         <label class="field"><span>ROI 間距 D (px，需 &gt; 2w/3 = {{ (2 * strips.w / 3).toFixed(1) }})</span>
@@ -102,8 +105,38 @@
           <input type="number" v-model.number="strips.side_margin"></label>
         <label class="field"><span>水平位移 x (px)</span><input type="number" min="0" v-model.number="strips.x_offset"></label>
       </template>
-
-      <div class="actions">
+      <template v-else>
+        <p class="legend" v-if="!hasRatio">此資料夾沒有 ratio.png，無法建立像素-高度比例預測模型（此步驟可略過）。</p>
+        <div class="ratio-grid" v-else>
+          <div v-for="side in ['left', 'right']" :key="side" class="ratio-col">
+            <strong>{{ side === 'left' ? '左側' : '右側' }}</strong>
+            <template v-for="kind in ['10', '5', '1']" :key="kind">
+              <span class="ratio-label">{{ kind }}mm</span>
+              <div class="ratio-list" :class="{ active: ratioList.side === side && ratioList.kind === kind }"
+                   @click="ratioList = { side, kind }; ratioSelected = -1; draw()">
+                <button v-for="(p, i) in ratioPoints[side][kind]" :key="i" class="item"
+                        :class="{ active: ratioList.side === side && ratioList.kind === kind && ratioSelected === i }"
+                        @click.stop="ratioList = { side, kind }; ratioSelected = i; draw()"
+                        @contextmenu.prevent.stop="ratioRight(side, kind, i)">PosY_{{ i + 1 }}: {{ Math.round(p[1]) }}</button>
+              </div>
+            </template>
+          </div>
+        </div>
+        <details class="ratio-rules">
+          <summary>規則說明</summary>
+          <ul>
+            <li>先點選 10 / 5 / 1 mm 下方的列表框（左右兩側各自點選）。</li>
+            <li>10 mm、5 mm：依序點選每個 10 mm / 5 mm 圖示，程式儲存其 XY 座標。</li>
+            <li>1 mm：點選每個 5 mm 後的第一個 1 mm 圖示。</li>
+            <li>左鍵點選列表中的座標點：圖上以由右向左的箭頭標示該點；再點圖片即在該點之後新增座標。</li>
+            <li>左鍵選取座標點後，在該點上右鍵連點兩下即移除該點。</li>
+            <li>左右比例尺高低不必對齊；每個列表至少 2 點才能計算，超出點選範圍的高度為外插值，需複查。</li>
+            <li>此模型非必要，可直接略過，不影響後續分析。</li>
+          </ul>
+        </details>
+        <button class="primary" :disabled="!hasRatio || busy" @click="saveRatio">儲存比例模型 (height_model.json)</button>
+      </template>
+      <div class="actions" v-if="tab !== 'ratio'">
         <button class="primary" :disabled="!loadedReference || busy || !hasMask || maskEditing" @click="preview">預覽</button>
         <button :disabled="!loadedReference || busy || !hasMask || maskEditing" @click="save">儲存 project.json</button>
       </div>

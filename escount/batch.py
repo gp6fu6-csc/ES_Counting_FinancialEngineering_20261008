@@ -184,6 +184,7 @@ def run_stage(record, stage, function, log):
 def train_projects(projects, template, template_mask, args, paths, results, log=print):
     from escount.calibration.calibrate import PROFILE_NAME
     from escount.features.cache import prepare
+    from escount.height import copy_model
     from escount.models.all_rois import train_all_rois
     from escount.models.select_rois import select_project
     from escount.models.train import train_project
@@ -198,6 +199,8 @@ def train_projects(projects, template, template_mask, args, paths, results, log=
         else:
             ok = run_stage(record, "template", lambda: apply_template(project, template, template_mask,
                                                                       paths["projects"], paths["overlays"], log), log)
+            if ok and copy_model(Path(args.template_profiles_root) / Path(args.template).name, paths["projects"] / name):
+                log("  copied the template's height model")
         steps = (("prepare", lambda: prepare(name, root, paths["projects"], paths["features"], args.workers)),
                  ("train", lambda: train_project(name, paths["features"], paths["projects"], args.device,
                                                  args.max_rows_per_image)),

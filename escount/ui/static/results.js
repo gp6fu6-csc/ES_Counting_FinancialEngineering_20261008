@@ -36,11 +36,16 @@ Vue.createApp({
       recommendedEnsemble: "", methodChoice: "auto", images: [], image: "",
       macd: { ema1: 2, ema2: 4, dea: 2 }, kd: { n: 4, k: 2, d: 2 }, overridden: false,
       result: null, roiIndex: 0, error: "", loading: false, requestId: 0, zoomKey: "",
-      zoomRange: { start: 0, end: 100 },
+      zoomRange: { start: 0, end: 100 }, showHeight: false,
     };
   },
   computed: {
     roi() { return this.result ? this.result.rois[this.roiIndex] : null; },
+    heightText() {                            // per-ROI height (mean of the left / right scale) and the image mean
+      const r = this.roi, f = (v) => (v === null || v === undefined ? "?" : v.toFixed(3));
+      return `${f(r.height_mm)} mm (左 ${f(r.height_left_mm)} / 右 ${f(r.height_right_mm)})`
+        + (r.height_extrapolated ? " ⚠ 含外插，需複查" : "");
+    },
     zoomRangeText() {
       if (this.zoomRange.start > 0.05 || this.zoomRange.end < 99.95) {
         return `【可視縮放區間: ${this.zoomRange.start.toFixed(1)}% – ${this.zoomRange.end.toFixed(1)}%】`;

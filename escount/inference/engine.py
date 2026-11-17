@@ -26,6 +26,7 @@ from escount.features.extract import (
     FEATURE_INDICATORS, POSITION_BIN, AugmentGrid, clip_items, config_hash, extent_slots, feature_config,
     indicator_id, projection_sigma,
 )
+from escount.height import load_model as load_height_model
 from escount.indicators.counters import IndicatorConfig, count
 from escount.inference.benchmark import ProjectRuntime
 from escount.inference.plots import save_analysis
@@ -35,6 +36,7 @@ from escount.signals.roi_bank import build_roi_bank
 MIN_DPI = 64
 MODEL_CHOICES = ("project", "general")
 PREDICTIONS_NAME = "predictions.csv"
+HEIGHTS_NAME = "heights.csv"          # per-ROI heights, written only when the project has a height model
 OUTPUT_FILES = {"corrected": "corrected.png", "analysis_plot": "analysis.png", "signals_csv": "signals.csv",
                 "result_json": "result.json"}
 FALLBACK_MARKS = FEATURE_INDICATORS[12]   # peaks, gate 0.25 (used when the baseline column is period_count)
@@ -179,6 +181,7 @@ class InferenceEngine:
         self.indicator_sources = indicator_sources(runtime.manifest)
         size = runtime.profile.image_size
         self.image_shape = (size["height"], size["width"]) if size else None
+        self.height_model = None      # set by load() when the project has height_model.json
 
     @classmethod
     def load(cls, case_or_profile_dir, model="project", profiles_root="outputs/projects",
@@ -198,7 +201,16 @@ class InferenceEngine:
 
             model_case = production_general(load_general_config(general_config))
             runtime = _general_runtime(profile_dir, profile_dir.parent / model_case / "model", single_thread)
-        return cls(profile.case, model, model_case, runtime)
+        engine = cls(profile.case, model, model_case, runtime)
+        engine.height_model = load_height_model(profile_dir)
+        return engine
+
+    def edge_fields(self, y0, y1):
+        """Top / bottom row of a ROI and, with a height model, its heights (left / right / mean, extrapolation flag)."""
+        fields = {"y_top": int(y0), "y_bottom": int(y1)}
+        if self.height_model:
+            fields.update(self.height_model.measure(y0, y1))
+        return fields
 
     def override_rows(self, rows, kept, rotated, overrides):
         """Copy of the feature rows whose count columns of the edited families are recomputed.
@@ -273,15 +285,20 @@ class InferenceEngine:
                          "x": int(slot.x), "y0": int(slot.y0), "y1": int(slot.y1),
                          "sigma": None if pd.isna(row["sigma"]) else float(row["sigma"]),
                          "period_count": int(row["period_count"]), "prediction": float(per_roi[position]),
-                         "slot": slot})
+                         **self.edge_fields(slot.y0, slot.y1), "slot": slot})
         image_name = path.name if path else (name or "image")
+        stack = {"stack_y_top": int(run["extent"]["y0"]), "stack_y_bottom": int(run["extent"]["y1"])}
+        if self.height_model:
+            heights = [roi["height_mm"] for roi in rois if roi["height_mm"] is not None]
+            stack.update(stack_height_mm=float(np.mean(heights)) if heights else None,
+                         height_extrapolated=any(roi["height_extrapolated"] for roi in rois))
         gt = parse_ground_truth(image_name)
         return {"image": image_name, "source": str(path) if path else None, "case": self.case,
                 "model": self.model_choice, "model_case": self.model_case,
                 "method": self.runtime.manifest["method"], "model_type": self.runtime.manifest["model_type"],
                 "N_pred": prediction, "gt": gt["count"] if gt else None,
                 "hit": (prediction == gt["count"]) if gt else None, "rois": rois,
-                "dropped_rois": run["dropped"], "timings_ms": timings, "roi_mode": roi_mode,
+                "dropped_rois": run["dropped"], "timings_ms": timings, "roi_mode": roi_mode, **stack,
                 "all_rois_ensemble": self.runtime.manifest.get("all_rois_ensemble"),
                 "source_sha256_before": sha_before, "rotated": run["rotated"], "_gray": gray}
 
@@ -358,13 +375,19 @@ class InferenceEngine:
         if out_dir == input_root or input_root in out_dir.parents:
             raise ValueError(f"output folder {out_dir} must not be inside the input folder {input_root}")
         out_dir.mkdir(parents=True, exist_ok=True)
-        results, records = [], []
+        results, records, heights = [], [], []
         for path in paths:
             result = self.infer(path, roi_mode=roi_mode)
             self.write_outputs(result, out_dir / path.stem, options)
             results.append(result)
             records.append({"image": result["image"], "GT": result["gt"], "N_pred": result["N_pred"],
                             "hit": result["hit"]})
+            heights += [{"image": result["image"], "roi": roi["index"], "key": roi["key"], "y_top": roi["y_top"],
+                         "y_bottom": roi["y_bottom"], "height_left_mm": roi["height_left_mm"],
+                         "height_right_mm": roi["height_right_mm"], "height_mm": roi["height_mm"],
+                         "extrapolated": roi["height_extrapolated"]} for roi in result["rois"] if self.height_model]
         pd.DataFrame(records, columns=["image", "GT", "N_pred", "hit"]).astype(object).to_csv(
             out_dir / PREDICTIONS_NAME, index=False, encoding="utf-8")
+        if self.height_model:
+            pd.DataFrame(heights).to_csv(out_dir / HEIGHTS_NAME, index=False, encoding="utf-8")
         return results

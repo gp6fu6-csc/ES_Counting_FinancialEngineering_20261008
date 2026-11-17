@@ -156,6 +156,14 @@ select option { font-size: 1.1rem; }
   height: 100%;
   overflow: hidden;
 }
+.roi-slice-viewport.edges { box-shadow: inset 4px 0 0 #ff9f43, inset -4px 0 0 #ff9f43; }   /* stack top (left) / bottom (right) */
+.height-value { color: #ff9f43; font-weight: 600; }
+.ratio-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ratio-col { display: flex; flex-direction: column; gap: 4px; }
+.ratio-label { text-align: center; border: 1px solid #4a5568; border-radius: 4px; padding: 2px; }
+.ratio-list { min-height: 64px; max-height: 160px; overflow-y: auto; border: 1px solid #4a5568; border-radius: 4px; padding: 2px; cursor: pointer; }
+.ratio-list.active { border-color: #f0b90b; }
+.ratio-rules ul { padding-left: 18px; margin: 4px 0; }
 .roi-slice-img {
   position: absolute;
   top: 0;

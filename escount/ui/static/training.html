@@ -47,6 +47,8 @@
           <p class="hint">{{ s.desc }}</p>
           <a v-if="s.key === 'calibrate'" :href="'/ui/calibration.html?case=' + encodeURIComponent(caseId)">
             <button>前往校正頁</button></a>
+          <a v-else-if="s.key === 'height'" :href="'/ui/calibration.html?tab=ratio&case=' + encodeURIComponent(caseId)">
+            <button>前往比例校正</button></a>
           <a v-else-if="s.key === 'results'" :href="'/ui/results.html?case=' + encodeURIComponent(caseId)">
             <button :disabled="!status.select">前往結果頁</button></a>
           <div v-else-if="s.key === 'select'" style="display: flex; gap: 8px; flex-wrap: wrap;">

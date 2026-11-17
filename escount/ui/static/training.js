@@ -2,6 +2,7 @@
 "use strict";
 const STEPS = [
   { key: "calibrate", title: "0. 校正", desc: "在校正頁調整旋轉 ROI 並儲存 project.json（必須先完成）。" },
+  { key: "height", title: "0-1. 像素-高度比例預測模型 (選用)", desc: "在校正頁「(c) 比例校正」點選 ratio.png 的左右比例尺建立模型；可直接跳過，不影響後續分析。" },
   { key: "prepare", title: "1. 建立特徵 (prepare)", desc: "依旋轉參數切出所有 ROI、投影並計算財務指標特徵，存成特徵快取。新增影像後需重新執行。" },
   { key: "train", title: "2. 訓練模型 (train)", desc: "以完全命中率比較 Ridge / SVR / XGBoost / LightGBM 與單一指標 baseline，保留最佳者。重新訓練後必須再做步驟 3。" },
   { key: "select", title: "3. 挑選最少 ROI 與建立全部 ROI 整合模型", desc: "挑選推論用最少 ROI，並訓練全部條帶之多 ROI 智能整合模型（預設同時建立，亦可單獨執行）。" },
