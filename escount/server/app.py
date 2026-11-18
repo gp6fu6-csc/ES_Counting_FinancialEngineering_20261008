@@ -15,6 +15,7 @@ Web UI (static, offline, vendored Vue 3 + ECharts) at /ui/calibration.html (PDF 
 and /ui/results.html (PDF p13-14) with
   GET  /results/{case}/images      images + whether `escount infer` outputs are complete
   POST /preview                    InferenceEngine with overridden MACD / KD params -> N_pred + chart series
+  POST /results/{case}/height      height (mm) between two image rows with the project's height model
 Project image folders are read from the first allowed root.
 
 Security: `escount serve` binds 127.0.0.1 by default and refuses any other host without an API key
@@ -48,7 +49,7 @@ from escount.calibration.calibrate import (
 )
 from escount.calibration.rotation_correction import normalize_mask, rotate_image
 from escount.es_counting import list_images, pick_reference, read_gray, read_mask
-from escount.height import MODEL_NAME, RATIO_NAME, read_points, save_points
+from escount.height import MODEL_NAME, RATIO_NAME, load_model as load_height_model, read_points, save_points
 from escount.inference.engine import InferenceEngine
 from escount.signals.roi_bank import MIN_SIDE_MARGIN, build_roi_bank, check_geometry, stack_rows
 
@@ -323,6 +324,9 @@ class RatioBody(BaseModel):
     """Clicked scale points in rotated-image pixels: {left|right: {"10"|"5"|"1": [[x, y], ...]}}."""
     angle_deg: float = Field(ge=-45, le=45)
     points: dict[str, dict[str, list[tuple[float, float]]]]
+class HeightBody(BaseModel):
+    y_a: float
+    y_b: float
 class MaskBody(BaseModel):
     """Valid-region polygon in full-resolution image pixels (x, y), at least 3 vertices."""
     points: list[tuple[float, float]] = Field(min_length=3, max_length=2000)
@@ -698,6 +702,15 @@ def create_app(config=ServerConfig()):
         ) if ok]
         return {"case": case, "images": images, "models": models, "results_root": str(out_root.resolve())}
 
+    @app.post("/results/{case}/height")
+    def results_height(case: str, body: HeightBody):
+        """Height between any two rows (results page measuring lines); 404 without height_model.json."""
+        state.case_dir(case, need_mask=False)
+        model = load_height_model(state.profiles_root / case)
+        if model is None:
+            raise HTTPException(404, f"project {case!r} has no {MODEL_NAME}")
+        top, bottom = sorted((body.y_a, body.y_b))
+        return jsonable({"y_top": top, "y_bottom": bottom, **model.measure(top, bottom)})
     @app.post("/preview")
     def preview(body: PreviewRequest):
         """InferenceEngine on a project image with optional MACD / KD parameter overrides (live N_pred)."""

@@ -32,7 +32,7 @@ Vue.createApp({
       this.cases = (await ESC.api("/calibration/cases")).cases;
       const query = new URLSearchParams(location.search);              // deep link: ?case=<id>&tab=strips
       if (["strips", "ratio"].includes(query.get("tab"))) this.tab = query.get("tab");
-      const wanted = query.get("case");
+      const wanted = ESC.lastCase();
       if (wanted && this.cases.includes(wanted)) { this.caseId = wanted; await this.loadCase(); }
     } catch (e) { this.error = e.message; }
   },
@@ -41,6 +41,7 @@ Vue.createApp({
     saveKey() { ESC.setApiKey(this.apiKey); },
 
     async loadCase() {
+      ESC.setLastCase(this.caseId);
       this.error = this.message = ""; this.result = null; images.original = images.rotated = images.overlay = images.ratio = null;
       this.ratioPoints = emptyRatio(); this.ratioSelected = -1;
       this.maskPoints = []; this.maskClosed = false; this.hover = null;

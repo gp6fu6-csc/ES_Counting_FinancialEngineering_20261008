@@ -36,11 +36,16 @@ Vue.createApp({
       recommendedEnsemble: "", methodChoice: "auto", images: [], image: "",
       macd: { ema1: 2, ema2: 4, dea: 2 }, kd: { n: 4, k: 2, d: 2 }, overridden: false,
       result: null, roiIndex: 0, error: "", loading: false, requestId: 0, zoomKey: "",
-      zoomRange: { start: 0, end: 100 }, showHeight: false,
+      zoomRange: { start: 0, end: 100 }, showHeight: false, measurePoints: [], measureResult: null, rightAt: 0,
     };
   },
   computed: {
     roi() { return this.result ? this.result.rois[this.roiIndex] : null; },
+    measuring() { return this.showHeight && this.result && this.result.has_height_model; },
+    edgeMarks() {                              // where the computed height starts (top) and ends (bottom)
+      return [["top", "▼ 頂部", this.roi.y_top], ["bottom", "底部 ▼", this.roi.y_bottom]]
+        .map(([cls, label, y]) => ({ cls, label, left: this.sliceLeft(y) })).filter((m) => m.left !== null);
+    },
     heightText() {                            // per-ROI height (mean of the left / right scale) and the image mean
       const r = this.roi, f = (v) => (v === null || v === undefined ? "?" : v.toFixed(3));
       return `${f(r.height_mm)} mm (左 ${f(r.height_left_mm)} / 右 ${f(r.height_right_mm)})`
@@ -154,13 +159,46 @@ Vue.createApp({
     for (const key of ["signal", "macd", "kd"]) observer.observe(this.$refs[key]);
     try {
       this.projects = (await ESC.api("/projects")).projects;
-      const wanted = new URLSearchParams(location.search).get("case");      // deep link: ?case=<id>
-      const first = this.projects.find((p) => p.has_model && (!wanted || p.case === wanted));
+      const wanted = ESC.lastCase();                                       // ?case=<id> or the last project
+      const first = this.projects.find((p) => p.has_model && p.case === wanted) || this.projects.find((p) => p.has_model);
       if (first) { this.caseId = first.case; await this.loadCase(); }
     } catch (e) { this.error = e.message; }
   },
   methods: {
     saveKey() { ESC.setApiKey(this.apiKey); },
+    pickCase() { ESC.setLastCase(this.caseId); this.loadCase(); },
+    fmtMm(v) { return v === null || v === undefined ? "?" : v.toFixed(3); },
+    // ---- slice x <-> image row (the slice runs from y0 at the left to y1 at the right, under the zoom window)
+    sliceRow(fraction) {
+      const { start, end } = this.zoomRange, r = this.roi;
+      return r.y0 + (start + fraction * (end - start)) / 100 * (r.y1 - r.y0);
+    },
+    sliceLeft(y) {
+      const { start, end } = this.zoomRange, r = this.roi;
+      const fraction = ((y - r.y0) / Math.max(1, r.y1 - r.y0) * 100 - start) / Math.max(0.0001, end - start);
+      return fraction < 0 || fraction > 1 ? null : `${(fraction * 100).toFixed(3)}%`;
+    },
+    measureAdd(event) {                        // left double click: 1st point, 2nd point, later ones move the 2nd
+      if (!this.measuring) return;
+      const rect = this.$refs.sliceViewport.getBoundingClientRect();
+      const y = this.sliceRow(Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1));
+      if (this.measurePoints.length < 2) this.measurePoints.push(y);
+      else this.measurePoints.splice(1, 1, y);
+      this.measure();
+    },
+    measureRight() {                           // right double click: drop the last point
+      const now = Date.now();
+      if (!this.measuring || now - this.rightAt > 500) { this.rightAt = now; return; }
+      this.rightAt = 0; this.measurePoints.pop(); this.measure();
+    },
+    async measure() {
+      this.measureResult = null;
+      if (this.measurePoints.length < 2) return;
+      const [y_a, y_b] = this.measurePoints;
+      try {
+        this.measureResult = await ESC.api(`/results/${encodeURIComponent(this.caseId)}/height`, { json: { y_a, y_b } });
+      } catch (e) { this.error = e.message; }
+    },
 
     updateSliceTransform(startPct, endPct) {
       const img = this.$refs.sliceImg;
@@ -176,6 +214,7 @@ Vue.createApp({
 
     async loadCase() {
       this.error = ""; this.result = null; this.overridden = false; this.roiIndex = 0;
+      this.measurePoints = []; this.measureResult = null;
       try {
         const info = await ESC.api(`/results/${encodeURIComponent(this.caseId)}/images`);
         this.images = info.images; this.models = info.models;
@@ -186,7 +225,7 @@ Vue.createApp({
     },
     modelChanged() { this.overridden = false; this.roiIndex = 0; this.preview(); },   // trained params of the model
     roiModeChanged() { this.roiIndex = 0; this.preview(); },
-    selectImage(name) { this.image = name; this.roiIndex = 0; this.preview(); },       // first ROI group by default
+    selectImage(name) { this.image = name; this.roiIndex = 0; this.measurePoints = []; this.measureResult = null; this.preview(); },       // first ROI group by default
     edited() { this.overridden = true; this.schedule(); },
     resetParams() { this.overridden = false; this.preview(); },
     moveRoi(step) {

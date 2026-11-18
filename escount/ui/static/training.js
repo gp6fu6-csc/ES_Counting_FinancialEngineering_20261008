@@ -26,7 +26,7 @@ Vue.createApp({
   async mounted() {
     try {
       this.cases = (await ESC.api("/calibration/cases")).cases;
-      const wanted = new URLSearchParams(location.search).get("case");
+      const wanted = ESC.lastCase();
       this.caseId = this.cases.includes(wanted) ? wanted : (this.cases[0] || "");
       await this.refresh();
     } catch (e) { this.error = e.message; }
@@ -43,6 +43,7 @@ Vue.createApp({
     },
     async refresh() {
       if (!this.caseId) return;
+      ESC.setLastCase(this.caseId);
       try {
         const info = await ESC.api(`/training/${encodeURIComponent(this.caseId)}/status`);
         this.status = info.steps; this.job = info.job; this.error = "";

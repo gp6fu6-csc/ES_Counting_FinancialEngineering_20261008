@@ -41,5 +41,9 @@ const ESC = (() => {
     };
   }
 
-  return { apiKey, setApiKey, api, bitmap, debounce };
+  // project folder shared by the calibration / training / results pages (?case=<id> in the URL wins)
+  const CASE_NAME = "escount.case";
+  const lastCase = () => new URLSearchParams(location.search).get("case") || localStorage.getItem(CASE_NAME) || "";
+  const setLastCase = (value) => { if (value) localStorage.setItem(CASE_NAME, value); };
+  return { apiKey, setApiKey, api, bitmap, debounce, lastCase, setLastCase };
 })();

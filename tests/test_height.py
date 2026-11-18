@@ -109,6 +109,16 @@ class HeightOutputTests(unittest.TestCase):
         self.assertTrue(preview["has_height_model"])
         self.assertTrue(all("height_mm" in roi for roi in preview["rois"]))
 
+    def test_results_page_measures_any_two_rows(self):
+        self.assertEqual(self.client.post("/results/SynA/height", json={"y_a": 0, "y_b": 100}).status_code, 404)
+        points = {"left": uniform(100), "right": uniform(50)}
+        self.assertEqual(self.client.post("/calibration/SynA/ratio", json={"angle_deg": 0, "points": points}).status_code, 200)
+        # the clicks may come in any order; the height is always measured from the upper to the lower row
+        result = self.client.post("/results/SynA/height", json={"y_a": 300, "y_b": 100}).json()
+        self.assertEqual((result["y_top"], result["y_bottom"]), (100, 300))
+        self.assertAlmostEqual(result["height_mm"], (20.0 + 40.0) / 2)
+        self.assertFalse(result["height_extrapolated"])
+
     def test_copy_model_to_another_project(self):
         (self.profiles / "SynA" / MODEL_NAME).write_text('{"points": {}}\n', encoding="utf-8")
         self.assertTrue(copy_model(self.profiles / "SynA", self.profiles / "Other"))

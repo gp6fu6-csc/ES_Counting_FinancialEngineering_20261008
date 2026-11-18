@@ -23,7 +23,7 @@
   <main class="layout results">
     <aside class="panel side" aria-label="專案、模型與影像">
       <label class="field"><span>選擇資料夾</span>
-        <select v-model="caseId" @change="loadCase">
+        <select v-model="caseId" @change="pickCase">
           <option disabled value="">— 選擇專案 —</option>
           <option v-for="p in projects" :key="p.case" :value="p.case" :disabled="!p.has_model">
             {{ p.case }}{{ p.has_model ? '' : '（未訓練）' }}</option>
@@ -110,11 +110,24 @@
           <span class="align-hint">【1:1 像素對齊】與下方訊號波形及指標圖橫軸完全同向</span>
         </div>
         <div class="roi-slice-track" ref="sliceTrack">
-          <div class="roi-slice-viewport" :class="{ edges: showHeight && result.has_height_model }" ref="sliceViewport">
+          <div class="roi-slice-viewport" ref="sliceViewport" @dblclick="measureAdd" @contextmenu.prevent="measureRight">
             <img :src="roi.slice_image" class="roi-slice-img" ref="sliceImg" alt="ROI 橫置切片影像">
+            <template v-if="measuring">
+              <div v-for="m in edgeMarks" :key="m.cls" :class="['edge-mark', m.cls]" :style="{ left: m.left }">
+                <span>{{ m.label }}</span></div>
+              <div v-for="(y, i) in measurePoints" :key="'m' + i" class="measure-line"
+                   :class="'m' + i" :style="{ left: sliceLeft(y) }"></div>
+            </template>
           </div>
           <div class="roi-slice-cursor" ref="sliceCursor"></div>
         </div>
+        <p class="height-value" v-if="measuring">
+          量測：切片上左鍵連點兩下 = 第一點 / 第二點（第三點起更新第二點），右鍵連點兩下 = 取消上一點。
+          <template v-if="measurePoints.length">y = {{ measurePoints.map((y) => y.toFixed(1)).join(' → ') }}</template>
+          <template v-if="measureResult"> · 純高度 {{ fmtMm(measureResult.height_mm) }} mm
+            (左 {{ fmtMm(measureResult.height_left_mm) }} / 右 {{ fmtMm(measureResult.height_right_mm) }})
+            <span v-if="measureResult.height_extrapolated">⚠ 含外插，需複查</span></template>
+        </p>
         <div class="roi-zoom-preview">
           <span>條帶寬度 w={{ roi.w }} px · 長度 L={{ roi.y1 - roi.y0 }} px · 投影: {{ roi.projection }}</span>
           <span>滑鼠游標指針即時連動對齊真實鋼片紋理 · 縮放平移 100% 毫秒級同步</span>

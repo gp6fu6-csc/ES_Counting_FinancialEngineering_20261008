@@ -156,7 +156,12 @@ select option { font-size: 1.1rem; }
   height: 100%;
   overflow: hidden;
 }
-.roi-slice-viewport.edges { box-shadow: inset 4px 0 0 #ff9f43, inset -4px 0 0 #ff9f43; }   /* stack top (left) / bottom (right) */
+.edge-mark { position: absolute; top: 0; bottom: 0; width: 3px; margin-left: -1px; background: #ff9f43; pointer-events: none; z-index: 5; }
+.edge-mark span { position: absolute; top: 0; left: 5px; font-size: 11px; color: #ff9f43; white-space: nowrap; text-shadow: 0 0 3px #000; }
+.edge-mark.bottom span { left: auto; right: 5px; }
+.measure-line { position: absolute; top: 0; bottom: 0; width: 8px; margin-left: -4px; pointer-events: none; z-index: 6; }
+.measure-line.m0 { background: rgba(0, 200, 255, 0.45); }
+.measure-line.m1 { background: rgba(255, 64, 160, 0.45); }
 .height-value { color: #ff9f43; font-weight: 600; }
 .ratio-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .ratio-col { display: flex; flex-direction: column; gap: 4px; }
