@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 from escount.calibration.calibrate import PROFILE_NAME, ROTATED_MASK_NAME, ProjectProfile
-from escount.es_counting import file_sha256, list_images, parse_ground_truth, read_gray, write_json
+from escount.es_counting import file_sha256, list_images, parse_ground_truth, read_gray, stack_extent, write_json
 from escount.features.extract import (
     FEATURE_INDICATORS, POSITION_BIN, AugmentGrid, clip_items, config_hash, extent_slots, feature_config,
     indicator_id, projection_sigma,
@@ -205,6 +205,21 @@ class InferenceEngine:
         engine.height_model = load_height_model(profile_dir)
         return engine
 
+    def sheet_edges(self, rotated, slot, projection):
+        """Rows of the first sheet from the top and the first sheet from the bottom inside one ROI (PDF 20261118 p22).
+
+        The ROI's full strip (not the image-level stack clip) is searched: es_counting.stack_extent on this strip
+        alone gives the textured run of the stack, and the first / last sheet peak (the counting marks) inside
+        that run are the edges. Peaks in the empty area above or below the stack are ignored.
+        """
+        items = list(getattr(self.runtime, "items", None) or []) + list(getattr(self.runtime, "all_items", None) or [])
+        full = next((s for s, p in items if (s.x, s.w, p) == (slot.x, slot.w, projection)), slot)
+        run = stack_extent(rotated, {"strips": [{"x": full.x, "width": full.w, "y0": full.y0, "y1": full.y1}]})
+        signal = project(rotated, full, projection, projection_sigma(projection, full.w, self.runtime.grid.gaussian_sigma_ratio))
+        _, highs, _ = count(signal, self.marks) if signal.size >= 2 else (0, [], [])
+        rows = [full.y0 + int(i) for i in highs if run["y0"] <= full.y0 + i < run["y1"]]
+        return (rows[0], rows[-1]) if len(rows) >= 2 else (run["y0"], run["y1"])
+
     def edge_fields(self, y0, y1):
         """Top / bottom row of a ROI and, with a height model, its heights (left / right / mean, extrapolation flag)."""
         fields = {"y_top": int(y0), "y_bottom": int(y1)}
@@ -285,9 +300,10 @@ class InferenceEngine:
                          "x": int(slot.x), "y0": int(slot.y0), "y1": int(slot.y1),
                          "sigma": None if pd.isna(row["sigma"]) else float(row["sigma"]),
                          "period_count": int(row["period_count"]), "prediction": float(per_roi[position]),
-                         **self.edge_fields(slot.y0, slot.y1), "slot": slot})
+                         **self.edge_fields(*self.sheet_edges(run["rotated"], slot, method)), "slot": slot})
         image_name = path.name if path else (name or "image")
-        stack = {"stack_y_top": int(run["extent"]["y0"]), "stack_y_bottom": int(run["extent"]["y1"])}
+        stack = ({"stack_y_top": int(np.median([roi["y_top"] for roi in rois])),        # median over the ROIs
+                  "stack_y_bottom": int(np.median([roi["y_bottom"] for roi in rois]))} if rois else {})
         if self.height_model:
             heights = [roi["height_mm"] for roi in rois if roi["height_mm"] is not None]
             stack.update(stack_height_mm=float(np.mean(heights)) if heights else None,

@@ -13,6 +13,7 @@ from escount.height import MODEL_NAME, HeightModel, SideScale, copy_model
 from escount.inference.engine import HEIGHTS_NAME, PREDICTIONS_NAME, InferenceEngine
 from escount.server.app import ServerConfig, create_app
 from synthetic_project import build
+from test_inference import PERIOD, TOP
 
 
 def uniform(step_px):
@@ -84,8 +85,11 @@ class HeightOutputTests(unittest.TestCase):
     def test_without_model_only_edges_are_added(self):
         out = self.root / "no_model"
         result = self.run_engine(out)
+        sheets = int(self.image.stem)
         for roi in result["rois"]:
-            self.assertEqual((roi["y_top"], roi["y_bottom"]), (roi["y0"], roi["y1"]))
+            # top = first sheet from the top, bottom = first sheet from the bottom (not the strip ends at row ~0)
+            self.assertLess(abs(roi["y_top"] - TOP), PERIOD + 8, roi)
+            self.assertLess(abs(roi["y_bottom"] - (TOP + (sheets - 1) * PERIOD)), PERIOD + 8, roi)
             self.assertNotIn("height_mm", roi)
         self.assertNotIn("stack_height_mm", result)
         self.assertFalse((out / HEIGHTS_NAME).exists())

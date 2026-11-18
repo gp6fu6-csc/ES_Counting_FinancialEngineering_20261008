@@ -414,7 +414,6 @@ def preview_payload(engine, result, overrides):
         if disp_slot is not None:
             roi_data["y0"] = int(disp_slot.y0)
             roi_data["y1"] = int(disp_slot.y1)
-            roi_data.update(engine.edge_fields(disp_slot.y0, disp_slot.y1))
         rois.append({**roi_data, "signal": _series(signal),
                      "highs": [int(i) for i in high_idx], "lows": [int(i) for i in low_idx],
                      "label": panel["label"], "slice_image": slice_b64, **charts})
