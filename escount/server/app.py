@@ -3,7 +3,8 @@
   GET  /health                     liveness (never needs the API key)
   GET  /projects                   calibrated projects under profiles_root (+ General models, loaded engines)
   POST /projects/{case}/load       load an InferenceEngine once ({"model": "project"|"general"}); becomes current
-  POST /infer/path                 {"path": ..., "project"?, "model"?} -> image read by the server
+  POST /infer/path                 {"path": ..., "project"?, "model"?, "roi_mode"?, "method"?, "output"?} -> image read
+                                   by the server; "output" (folder under output_root) also writes the `escount infer` files
   POST /infer/image                PNG/BMP bytes (multipart field "file" or raw body) -> cv2.imdecode
 OpenAPI / Swagger UI at /docs. Inference is serial (one lock), single-thread CPU, nothing is written.
 
@@ -72,6 +73,7 @@ class ServerConfig:
     api_key: Optional[str] = None
     general_config: str = "configs/general.json"
     results_root: str = "outputs/infer"   # `escount infer` outputs (<case>/<image stem>/...) for the results page
+    output_root: str = "outputs"          # /infer/path "output" folders must lie inside this folder
     features_root: str = "outputs/features"  # `escount prepare` cache (training page step status)
 
 
@@ -284,6 +286,27 @@ class ServerState:
         for key in ("outputs", "dpi"):
             record.pop(key, None)
         return jsonable(record)
+    def output_dir(self, raw):
+        """`output` of /infer/path: a relative folder (e.g. outputs/myTest) that must stay inside output_root."""
+        path = Path(raw)
+        if path.is_absolute() or raw.startswith(("\\\\", "//")) or ".." in path.parts:
+            raise HTTPException(403, "output must be a relative folder without '..' (e.g. outputs/myTest)")
+        root = Path(self.config.output_root).resolve()
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root):
+            raise HTTPException(403, f"output must lie inside {root}")
+        return resolved
+    def infer_to_folder(self, engine, source, out_dir, roi_mode, method):
+        """Same as `escount infer --input <file> --output <out_dir>`: writes the files and returns the result."""
+        from threadpoolctl import threadpool_limits
+        try:
+            with self.lock, threadpool_limits(limits=1):
+                result = engine.run(source, out_dir, method=method, roi_mode=roi_mode)[0]
+        except (ValueError, IOError) as error:
+            raise HTTPException(422, str(error)) from error
+        record = InferenceEngine.result_record(result, result["outputs"])
+        record["output_dir"] = str(Path(out_dir) / Path(source).stem)
+        return jsonable(record)
 
 
 class LoadRequest(BaseModel):
@@ -294,6 +317,9 @@ class PathRequest(BaseModel):
     path: str
     project: Optional[str] = None
     model: Optional[ModelChoice] = None
+    roi_mode: Literal["minimal", "all"] = "minimal"
+    method: Literal["auto", "baseline", "kd", "macd", "xgboost", "ridge", "trimmed_mean"] = "auto"
+    output: Optional[str] = None      # e.g. "outputs/myTest": also write the `escount infer` files there
 
 
 class RoiModel(BaseModel):
@@ -499,12 +525,18 @@ def create_app(config=ServerConfig()):
     @app.post("/infer/path")
     def infer_path(body: PathRequest):
         engine = state.engine(body.project, body.model)
-        return state.infer(engine, state.allowed_path(body.path))
+        source = state.allowed_path(body.path)
+        if body.output:
+            return state.infer_to_folder(engine, source, state.output_dir(body.output), body.roi_mode, body.method)
+        engine.runtime.forced_method = None if body.method == "auto" else body.method
+        return jsonable({key: value for key, value in InferenceEngine.result_record(
+            state.run(engine, source, roi_mode=body.roi_mode)).items() if key not in ("outputs", "dpi")})
 
     @app.post("/infer/image", openapi_extra=IMAGE_BODY)
     async def infer_image(request: Request, project: Optional[str] = None, model: Optional[ModelChoice] = None,
                           name: Optional[str] = None):
         engine = state.engine(project, model)
+        engine.runtime.forced_method = None       # auto (a previous /infer/path or /preview may have forced one)
         if request.headers.get("content-type", "").startswith("multipart/form-data"):
             form = await request.form()
             upload = form.get("file")

@@ -281,6 +281,117 @@ uv run escount infer --project x05_unpress --input Data/x05_unpress/test2.png --
 uv run escount infer --project x05_unpress --input Data/x05_unpress/test2.png --method baseline
 ```
 
+### 3.7 網路 Server API：Postman / LabVIEW 遠端推論
+
+Server 開著時，其他程式（Postman、LabVIEW、Python requests……）可以透過 HTTP 送指令，效果等同 `escount infer`，並在回應中直接回傳預測片數 `N_pred`。互動式 API 文件：`http://<IP>:8000/docs`。
+
+#### (1) 啟動 Server（在跑分析的電腦，專案根目錄）
+
+```powershell
+# 只給本機（127.0.0.1）使用：不需要 API Key
+uv run escount serve
+
+# 開放給其他電腦：--host 0.0.0.0 必須設定 API Key，否則拒絕啟動
+$env:ESCOUNT_API_KEY = "escount123"            # 自訂金鑰；用環境變數，金鑰不會出現在行程清單
+uv run escount serve --host 0.0.0.0 --port 8000
+# 影像不在 Data 底下時，加 --root 指定允許讀取的資料夾（可重複）：--root Data --root D:\Images
+```
+
+- 視窗需保持開啟，Ctrl+C 停止。修改程式、或在 WebUI 重新校正 / 訓練後，請重開 Server（或重新 load 專案）。
+- 其他電腦連線：用 `ipconfig` 查本機 IPv4（與對方同網段的那張網卡），並以系統管理員開放防火牆：
+  `New-NetFirewallRule -DisplayName "ESCounting 8000" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow`
+- 連線測試：瀏覽器開 `http://<IP>:8000/health`，看到 `{"status":"ok",...}` 即成功。
+
+#### (2) Postman 共用設定
+
+| 項目 | 設定 |
+|---|---|
+| Authorization | Type = **API Key**，Key = `X-API-Key`，Value = `escount123`，Add to = Header（本機模式未設金鑰可省略） |
+| Body | **raw** → **JSON**（自動帶 `Content-Type: application/json`） |
+| 網址 | 同一台電腦用 `http://127.0.0.1:8000`；其他電腦用 `http://<本機IP>:8000` |
+
+#### (3) 請求 1：載入專案（切換專案時送一次即可）
+
+- `POST http://127.0.0.1:8000/projects/press-White-60/load`
+- Body：
+
+```json
+{"model": "project"}
+```
+
+`model`：`project`（專案模型）或 `general`（跨專案通用模型）。回應 `"loaded": true` 表示成功。
+**注意：此請求只載入模型，不做推論；推論參數要送到請求 2 的 `/infer/path`。**
+
+#### (4) 請求 2：推論（對應 CLI 指令）
+
+CLI：`uv run escount infer --project press-White-60 --input Data/press-White-60/test2.png --roi-mode all --method auto --output outputs/myTest`
+
+- `POST http://127.0.0.1:8000/infer/path`
+- Body：
+
+```json
+{
+  "path": "Data/press-White-60/test2.png",
+  "project": "press-White-60",
+  "roi_mode": "all",
+  "method": "auto",
+  "output": "outputs/myTest"
+}
+```
+
+| 欄位 | 必填 | 說明（對應 CLI 參數） |
+|---|---|---|
+| `path` | 是 | 影像路徑（`--input`，單一 .png/.bmp）；相對路徑以 Server 啟動目錄為準，絕對路徑在 JSON 中寫成 `F:\\...\\test2.png`；必須位於 `--root` 資料夾內 |
+| `project` | 否 | 專案名稱（`--project`）；省略 = 最後一次 load 的專案（須先 load，否則 409） |
+| `model` | 否 | `project` / `general`（`--model`） |
+| `roi_mode` | 否 | `minimal`（預設）/ `all`（`--roi-mode`） |
+| `method` | 否 | `auto`（預設）/ `baseline` / `kd` / `macd` / `xgboost` / `ridge` / `trimmed_mean`（`--method`） |
+| `output` | 否 | 輸出資料夾（`--output`），須為 `outputs/` 底下的相對路徑；省略 = 只回傳結果、不寫檔 |
+
+有 `output` 時寫出的檔案與 CLI 相同：`outputs/myTest/predictions.csv`、`outputs/myTest/test2/{corrected.png, analysis.png, signals.csv, result.json}`；專案有像素-高度比例模型時另有 `heights.csv`。
+
+#### (5) 回應內容（JSON）
+
+| 欄位 | 說明 |
+|---|---|
+| `N_pred` | **預測片數（整數）** |
+| `gt` / `hit` | 檔名為數字時的 GT 與是否命中，否則為 `null` |
+| `roi_mode`、`method`、`model_type` | 實際使用的方案 |
+| `stack_y_top` / `stack_y_bottom` | 堆疊頂部（自上第一片）/ 底部（自下第一片）Y 座標（各 ROI 中位數） |
+| `rois[]` | 每個 ROI：`prediction`、`y_top`、`y_bottom`；有比例模型時另有 `height_mm`、`height_left_mm`、`height_right_mm`、`height_extrapolated`（`true` = 含外插需複查） |
+| `stack_height_mm` | 各 ROI 高度平均（僅有比例模型時） |
+| `output_dir`、`outputs` | 寫出的資料夾與檔名（僅有 `output` 時） |
+| `timings_ms` | 各階段耗時 |
+
+#### (6) 直接上傳影像（不經檔案路徑，適合 LabVIEW 取像後直接送）
+
+- `POST http://127.0.0.1:8000/infer/image?project=press-White-60&name=test2.png`
+- Postman Body 選 **binary** 並選擇 PNG/BMP 檔（或 form-data，欄位名稱 `file`）。
+- 影像須與專案影像同尺寸（2448×2048）；此端點只回傳結果、不寫檔，使用最少 ROI + auto 方案。
+
+#### (7) 常見錯誤
+
+| 狀態碼 | 原因 |
+|---|---|
+| 無回應 / 逾時 | IP 不對、Server 只綁 127.0.0.1（未加 `--host 0.0.0.0`）、防火牆未開 |
+| 401 | 沒帶 `X-API-Key` 或金鑰錯誤 |
+| 403 | `path` 不在 `--root` 內，或 `output` 不在 `outputs/` 內 / 含 `..` / 為絕對路徑 |
+| 404 | 專案或影像檔不存在 |
+| 409 | 尚未 load 專案 |
+| 422 | 參數值錯誤（如 `roi_mode` 拼錯）、影像尺寸不符、專案未訓練 |
+
+#### (8) PowerShell 等效呼叫（不用 Postman 時）
+
+```powershell
+$h = @{ "X-API-Key" = "escount123" }
+Invoke-RestMethod http://127.0.0.1:8000/projects/press-White-60/load -Method Post -Headers $h -ContentType application/json -Body '{"model":"project"}'
+$r = Invoke-RestMethod http://127.0.0.1:8000/infer/path -Method Post -Headers $h -ContentType application/json `
+     -Body '{"path":"Data/press-White-60/test2.png","project":"press-White-60","roi_mode":"all","method":"auto","output":"outputs/myTest"}'
+$r.N_pred
+```
+
+LabVIEW（HTTP Client VIs）流程與欄位說明另見 `docs/labview_api.md`。
+
 ---
 
 ## 4. AutoResearch 自動研究專題指令

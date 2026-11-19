@@ -72,6 +72,29 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(client.post("/infer/image", content=b"GIF89a....").status_code, 415)
         self.assertEqual(tree_signatures(self.data), self.before)
 
+    def test_path_inference_with_output_writes_cli_files_and_returns_count(self):
+        # Postman / LabVIEW equivalent of `escount infer --roi-mode ... --method ... --output ...`
+        out_root = self.root / "out"
+        out_root.mkdir(exist_ok=True)
+        cwd = os.getcwd()
+        os.chdir(self.root)                       # "output" is relative to the server's working folder
+        try:
+            client = Client(create_app(ServerConfig(profiles_root=str(self.profiles), allowed_roots=(str(self.data),),
+                                                    general_config=str(self.config), output_root=str(out_root))))
+            client.post("/projects/SynA/load")
+            body = {"path": str(self.image), "project": "SynA", "method": "auto", "output": "out/myTest"}
+            self.assert_same_result(client.post("/infer/path", json=body))
+            result = client.post("/infer/path", json=body).json()
+            self.assertEqual(Path(result["output_dir"]), (out_root / "myTest" / "076").resolve())
+            self.assertTrue((out_root / "myTest" / "predictions.csv").is_file())
+            self.assertTrue(all((out_root / "myTest" / "076" / name).is_file() for name in result["outputs"]))
+            for bad in ("../escape", str(self.root / "out" / "abs"), "elsewhere/x"):
+                self.assertEqual(client.post("/infer/path", json={**body, "output": bad}).status_code, 403, bad)
+            self.assertEqual(client.post("/infer/path", json={**body, "roi_mode": "every"}).status_code, 422)
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(tree_signatures(self.data), self.before)
+
     def test_infer_before_load_is_rejected(self):
         client = Client(self.app())
         self.assertEqual(client.post("/infer/path", json={"path": str(self.image)}).status_code, 409)
