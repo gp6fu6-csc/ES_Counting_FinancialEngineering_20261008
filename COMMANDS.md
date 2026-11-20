@@ -179,7 +179,73 @@ uv run escount serve       # 網頁：校正頁存方案 → 訓練頁批次訓�
 * **結果頁**：左側「條帶方案 / 訓練紀錄」下拉選單切換預設、方案最近一次模型、或某次已儲存紀錄，下方顯示該次的訓練設定與準確度；再配合「ROI 方案（最少/全部）」與預測演算法選單比較。
 * API：`GET /variants`、`GET /variants/{case}`、`GET /runs/{case}@{方案}~{時間}`、`POST /calibration/{case}/variants/{名稱}`、`POST /training/batch`；`/preview`、`/results/{case}/images`、`/projects/{case}/load` 的 `case` 可直接帶 `<資料夾>@<方案>[~<時間>]`。
 
----## 3. 推論調用與模型切換範例 (Sample Code)
+---
+
+## 2.6 長時間完整分析：多資料夾 × 多方案 + AutoResearch + 報告（一行指令）
+適用情境：把電腦放著跑（例如整個週末），一次完成「AutoResearch 搜尋 → 多資料夾 × 多條帶方案訓練 → 產生報告」。
+範例資料夾：`press-Red-20`、`press-Red-40`、`press-Red-70`、`press-Red-max`、`press-White-18`、`press-White-28`、`press-White-45`、`press-White-60`、`unpress-Red-70`、`unpress-White-45`；方案：`n2_red20`、`n4_red20`、`n6_red20`（先在校正頁或用 `escount variant create` 建立；其他資料夾會自動沿用同名方案的條帶）。
+
+### 執行前
+* 在**獨立的 Windows PowerShell 視窗**執行，不要用 IDE 內建終端機（IDE 連線結束時，終端機內的工作會被一起中止）。指令都在本機執行，網路斷線不影響。
+* 每組訓練的「每張影像訓練取樣列數」請用預設 1000（`--max-rows-per-image 1000`）；太小（例如 10）模型幾乎沒資料可學。
+* 資料夾需已在校正頁儲存 `project.json`，且排除專案（`configs/general.json` 的 `excluded_projects`，如 Ring-type）不會被研究。
+
+### 一行指令
+貼進 PowerShell 按一次 Enter 即可。各階段不論成敗都會接著跑下一個，輸出存在 `logs\`。
+
+```powershell
+cd F:\Antigravity_2_0\20261102_ESCountingFinace; mkdir logs -Force | Out-Null; powercfg /change standby-timeout-ac 0; powercfg /change monitor-timeout-ac 0; $cases = 'press-Red-20','press-Red-40','press-Red-70','press-Red-max','press-White-18','press-White-28','press-White-45','press-White-60','unpress-Red-70','unpress-White-45'; uv run escount research --track default --hours 24 --cases $cases --device cuda 2>&1 | Tee-Object -FilePath logs\1_research_default.log -Append; uv run escount run-variants --projects $cases --variants n2_red20 n4_red20 n6_red20 --device cuda --max-rois 25 --max-rows-per-image 1000 --trials 1 --track default --note "n2/n4/n6 完整分析" 2>&1 | Tee-Object -FilePath logs\2_run_variants.log -Append; uv run escount report --cases $cases --out outputs/research_report 2>&1 | Tee-Object -FilePath logs\3_report.log -Append; "ALL DONE $(Get-Date)" | Tee-Object -FilePath logs\done.txt -Append
+```
+
+| 階段 | 內容 | 輸出 |
+|---|---|---|
+| 0 | 關閉 AC 電源的休眠與螢幕逾時（`powercfg`） | — |
+| 1 | AutoResearch default 軌，總預算 24 小時（`--hours`），各資料夾輪流跑 | `candidates/<資料夾>/best_params.json`、`research/`、`logs\1_research_default.log` |
+| 2 | 10 資料夾 × 3 方案 = 30 組，依序訓練（prepare → train → select-rois → all-rois → infer），每組存 `run.json` 與模型備份；`--trials 1` 只再補 1 次搜尋，目的是把階段 1 的最佳參數寫進每個 `run.json` | `outputs/projects/<資料夾>@<方案>/runs/<時間>/`、`outputs/infer/<資料夾>@<方案>~<時間>/`、`logs\2_run_variants.log` |
+| 3 | 依資料夾產生 AutoResearch 報告 | `outputs/research_report/latest/report.html`、`logs\3_report.log` |
+| 完成 | 寫入完成時間 | `logs\done.txt` |
+
+總時間 = 階段 1 的 24 小時 + 階段 2 的訓練時間（取決於資料量與 GPU，需自行實測）。要放更久可調大 `--hours`。啟動後建議先看 `logs\*.log` 前幾行確認沒有報錯。
+
+### 為什麼用 `--hours`，不是上千次 trials
+* 每個 **trial** 是一組候選設定：條帶寬度 w、間距 D、財務指標、模型種類與參數、聚合方式、ROI 上限。Optuna 的 TPE 會依前面 trial 的成績挑下一組，前幾十次主要在學習搜尋空間。
+* 搜尋空間夠大，30–100 次通常已接近平台，之後再增加，最佳成績很少再變。
+* 每個資料夾只有約十幾張影像，完全命中率的刻度很粗；trials 過多時容易挑到「剛好符合這幾張」的設定（過度擬合）。
+* `--hours` 讓各資料夾輪流跑，每個資料夾得到的 trials 數量相近，時間到自動停止，也可中斷後續跑。
+
+### 中斷與續跑
+* **階段 1** 可續跑：再貼同一個 `uv run escount research ...` 指令，已跑的 trials 會累加（Optuna 資料庫 `research/study.db`）。
+* **階段 2** 不會自動續跑，但特徵快取已存在時 prepare 會直接沿用。只重跑沒完成的資料夾：
+  ```powershell
+  uv run escount run-variants --projects press-White-45 press-White-60 --variants n2_red20 n4_red20 n6_red20 --device cuda --max-rois 25 --max-rows-per-image 1000 --trials 1 --track default 2>&1 | Tee-Object -FilePath logs\2_run_variants.log -Append
+  ```
+  已完成的組別都有各自的 `runs/<時間>/run.json`（`status` 為 `ok` 才算完成；`failed` 的紀錄不含模型備份）。
+* **階段 3** 隨時可單獨重跑。
+
+### 其他軌道（選用，需另外執行）
+`mae`、`exact`、`ensemble` 三軌只支援 `--trials`，不支援 `--hours`，所以沒有放進一行指令，總時間較難估。
+
+```powershell
+uv run escount research --track mae      --trials 40 --cases $cases --device cuda 2>&1 | Tee-Object -FilePath logs\research_mae.log -Append
+uv run escount research --track exact    --trials 40 --cases $cases --device cuda 2>&1 | Tee-Object -FilePath logs\research_exact.log -Append
+uv run escount research --track ensemble --trials 40 --cases $cases --device cuda 2>&1 | Tee-Object -FilePath logs\research_ensemble.log -Append
+```
+這三軌的報告要指定各自的目錄與資料庫（路徑依 `scripts/run_research_*.py` 的預設推出，使用前請確認）：
+```powershell
+uv run escount report --cases $cases --out outputs/research_report_mae `
+  --research-root research/mae --candidates-root candidates/mae `
+  --storage sqlite:///research/study_mae.db --study-suffix _mae
+```
+`exact` 軌對應 `exact_hit`、`ensemble` 軌對應 `ensemble`，路徑與後綴照此替換。
+
+### 限制
+* AutoResearch 自行搜尋 w、D，不使用方案的條帶，所以每個資料夾只跑一次，不隨方案變動；結果只記錄在 `run.json`，不會自動取代推論模型。
+* `escount report` 只依資料夾比較，不分方案。方案之間的比較請看結果頁「條帶方案 / 訓練紀錄」或各自的 `run.json`。
+* 方案只改變「全部 ROI」模式的條帶；「最少 ROI」由候選庫自動挑選，同一資料夾各方案的最少 ROI 結果會接近。
+
+---
+
+## 3. 推論調用與模型切換範例 (Sample Code)
 
 本章節提供 Python 純代碼調用範例，可供第三方程式、LabVIEW、PLC 整合或研發人員直接複製引用：
 

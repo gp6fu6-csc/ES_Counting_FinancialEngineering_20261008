@@ -43,6 +43,8 @@ Vue.createApp({
 
     async loadCase() {
       ESC.setLastCase(this.caseId);
+      // the previous project's reference image must not be sent for this project (a pending preview used it -> 404)
+      this.loadedReference = ""; this.requestId++;
       this.error = this.message = ""; this.result = null; images.original = images.rotated = images.overlay = images.ratio = null;
       this.ratioPoints = emptyRatio(); this.ratioSelected = -1;
       this.maskPoints = []; this.maskClosed = false; this.hover = null;
