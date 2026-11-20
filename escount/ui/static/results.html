@@ -25,10 +25,19 @@
       <label class="field"><span>選擇資料夾</span>
         <select v-model="caseId" @change="pickCase">
           <option disabled value="">— 選擇專案 —</option>
-          <option v-for="p in projects" :key="p.case" :value="p.case" :disabled="!p.has_model">
-            {{ p.case }}{{ p.has_model ? '' : '（未訓練）' }}</option>
+          <option v-for="p in projects" :key="p.case" :value="p.case" :disabled="!p.has_model && !p.variants.length">
+            {{ p.case }}{{ p.has_model || p.variants.length ? '' : '（未訓練）' }}</option>
         </select>
       </label>
+      <label class="field"><span>條帶方案 / 訓練紀錄 (ROI + 模型參數)</span>
+        <select v-model="variantChoice" @change="variantChanged" :disabled="!variantOptions.length">
+          <option v-for="o in variantOptions" :key="o.value" :value="o.value" :disabled="o.disabled">{{ o.label }}</option>
+        </select>
+      </label>
+      <details class="run-info" v-if="runLines.length" open>
+        <summary>此方案 / 紀錄的訓練設定</summary>
+        <dl><template v-for="line in runLines" :key="line[0]"><dt>{{ line[0] }}</dt><dd>{{ line[1] }}</dd></template></dl>
+      </details>
       <label class="field"><span>模型</span>
         <select v-model="model" @change="modelChanged" :disabled="!models.length">
           <option v-for="m in models" :key="m" :value="m">{{ m === 'project' ? '專案客製化模型 (Project)' : 'General 模型' }}</option>

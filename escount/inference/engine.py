@@ -185,7 +185,7 @@ class InferenceEngine:
 
     @classmethod
     def load(cls, case_or_profile_dir, model="project", profiles_root="outputs/projects",
-             general_config="configs/general.json", single_thread=True):
+             general_config="configs/general.json", single_thread=True, run=None):
         """Load profile, rotated mask, model (SHA verified) and selected ROIs once (excluded from timings)."""
         if model not in MODEL_CHOICES:
             raise ValueError(f"model must be one of {MODEL_CHOICES}, got {model!r}")
@@ -193,8 +193,13 @@ class InferenceEngine:
         profile = ProjectProfile.load(profile_dir / PROFILE_NAME)
         if profile.quality_status != "ok":
             raise ValueError(f"{profile_dir}: project.json quality_status is {profile.quality_status!r}")
+        if run and model != "project":
+            raise ValueError("a saved run belongs to a project model, not the General model")
         if model == "project":
-            runtime = ProjectRuntime.load(profile_dir.name, profile_dir.parent, single_thread=single_thread)
+            from escount.variants import run_model_dir
+
+            runtime = ProjectRuntime.load(profile_dir.name, profile_dir.parent, single_thread=single_thread,
+                                          model_dir=run_model_dir(profile_dir.name, run, profile_dir.parent) if run else None)
             model_case = profile_dir.name
         else:
             from escount.models.train import load_general_config, production_general

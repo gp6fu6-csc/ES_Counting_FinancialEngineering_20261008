@@ -124,7 +124,62 @@ uv run escount benchmark --project x05_unpress
 
 ---
 
-## 3. 推論調用與模型切換範例 (Sample Code)
+## 2.5 ROI 條帶方案 (Variant) 與多資料集批次訓練
+**方案** = 同一專案下的一組「計片條帶」(N、w、D、距邊、位移)。遮罩、旋轉校正 ROI 與角度**共用**專案已儲存的 `project.json`，方案只各自保存條帶。
+識別字：`<資料夾>`（預設）、`<資料夾>@<方案>`、`<資料夾>@<方案>~<時間>`（某次已儲存的訓練紀錄）。
+
+```powershell
+# 建立 / 查看方案（也可在校正頁 (b) 計片條帶「另存為新方案」）
+uv run escount variant create --project press-Red-70 --name n10_w30 --n 10 --w 30 --pitch 50
+uv run escount variant list   --project press-Red-70
+
+# 多資料夾 × 多方案，一組接一組依序訓練 (prepare → train → select-rois → all-rois → infer)
+uv run escount run-variants --projects press-Red-70 press-White-45 --variants n10_w30 n6_w20 `
+    --device cuda --max-rois 25 --max-rows-per-image 1000 --trials 5 --track default --note "第二批"
+
+# 任一步驟都可單獨指定方案（--variant 或 --project <資料夾>@<方案>）
+uv run escount train       --project press-Red-70 --variant n10_w30
+uv run escount all-rois    --project press-Red-70@n10_w30
+uv run escount infer       --project press-Red-70 --variant n10_w30 --input Data/press-Red-70 --roi-mode all
+uv run escount infer       --project press-Red-70@n10_w30 --run 20261120-153000 --input Data/press-Red-70   # 舊紀錄的模型
+uv run escount serve       # 網頁：校正頁存方案 → 訓練頁批次訓練 → 結果頁「條帶方案 / 訓練紀錄」切換
+```
+`run-variants` 參數：
+
+| 參數 | 說明 |
+|---|---|
+| `--projects` / `--variants` | 要訓練的資料夾與方案（每個組合各訓練一次）。方案在某資料夾不存在時，沿用另一資料夾同名方案的條帶。 |
+| `--device` | `cuda`（無 GPU 自動改 CPU）或 `cpu`。 |
+| `--max-rois` | 最少 ROI 貪婪挑選上限（預設 25）。 |
+| `--max-rows-per-image` | 每張影像訓練取樣列數（預設 1000）。 |
+| `--trials` | AutoResearch (Optuna TPE) 試驗次數，**每個資料夾只跑一次**，0 = 不執行（預設）。每個 trial = 一組候選的 w、D、財務指標、模型種類/超參數、聚合方式、ROI 上限，以留一影像 (LOIO) 完全命中率評分；最佳者寫入 `candidates/<資料夾>/best_params.json`，資料庫 `research/study.db` 可續跑並累加。搜尋結果只記錄在 run.json，不會自動取代推論模型。 |
+| `--track` | AutoResearch 軌道：`default`（完全命中率）、`mae`、`exact`、`ensemble`。 |
+| `--no-infer` | 略過「分析全部影像」。 |
+| `--note` | 備註，存入 run.json。 |
+| `--workers` | 特徵計算的行程數。 |
+| `--data-root` `--profiles-root` `--cache-root` `--results-root` | 各根目錄（預設 `Data`、`outputs/projects`、`outputs/features`、`outputs/infer`）。 |
+
+> 條帶只改變「全部 ROI」模式的 N 組條帶與其整合模型；「最少 ROI」由候選庫自動挑選，不隨條帶改變。
+
+**輸出位置**（`<根>` = `outputs/projects`）：
+
+| 內容 | 位置 |
+|---|---|
+| 方案的條帶、校正副本、最近一次模型 | `<根>/<資料夾>@<方案>/project.json`、`model/` |
+| 每次訓練的完整紀錄與模型備份 | `<根>/<資料夾>@<方案>/runs/<時間>/run.json`、`model/` |
+| 特徵快取 | `outputs/features/<資料夾>@<方案>/` |
+| 該次訓練的全影像分析 | `outputs/infer/<資料夾>@<方案>~<時間>/` |
+| AutoResearch 最佳參數 | `candidates/<資料夾>/best_params.json`（其他軌道在 `candidates/<軌道>/`） |
+
+`run.json` 內容：時間、狀態、備註、條帶參數、校正摘要（角度、參考影像）、訓練選項（device / max_rois / max_rows_per_image / workers / infer）、各步驟耗時與成敗、AutoResearch 設定與最佳參數、模型摘要（最少 ROI 與全部 ROI 的完全命中率與 MAE）、分析結果資料夾。
+
+網頁操作：
+* **校正頁 (b) 計片條帶**：「條帶方案」下拉選單載入已存方案；輸入名稱後按「另存為新方案 / 更新方案」。選了方案時不能儲存 `project.json`（避免覆蓋預設條帶）。
+* **訓練頁**：上方「ROI 方案批次訓練」複選資料夾與方案，設定最多 ROI、取樣列數、AutoResearch trials / 軌道、備註，按「開始批次訓練」（展開「批次訓練參數與輸出位置說明」可看每個參數）；下方逐步訓練可用左側「條帶方案」下拉選單指定方案。
+* **結果頁**：左側「條帶方案 / 訓練紀錄」下拉選單切換預設、方案最近一次模型、或某次已儲存紀錄，下方顯示該次的訓練設定與準確度；再配合「ROI 方案（最少/全部）」與預測演算法選單比較。
+* API：`GET /variants`、`GET /variants/{case}`、`GET /runs/{case}@{方案}~{時間}`、`POST /calibration/{case}/variants/{名稱}`、`POST /training/batch`；`/preview`、`/results/{case}/images`、`/projects/{case}/load` 的 `case` 可直接帶 `<資料夾>@<方案>[~<時間>]`。
+
+---## 3. 推論調用與模型切換範例 (Sample Code)
 
 本章節提供 Python 純代碼調用範例，可供第三方程式、LabVIEW、PLC 整合或研發人員直接複製引用：
 

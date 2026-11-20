@@ -24,6 +24,7 @@ from escount.features.extract import (
 )
 from escount.models.store import read_manifest, update_manifest
 from escount.models.train import feature_frame
+from escount.variants import base_case
 from escount.signals.roi_bank import RoiSlot, build_roi_bank, stack_rows
 
 ENSEMBLE_MODEL_NAME = "model_all_rois_ensemble.joblib"
@@ -50,11 +51,12 @@ def build_all_rois_layout(case, profiles_root="outputs/projects", data_root="Dat
     # Use reference image or first available image to compute strip extent
     ref_name = getattr(profile, "reference_image", None)
     img_path = None
-    if ref_name and (Path(data_root) / case / ref_name).is_file():
-        img_path = Path(data_root) / case / ref_name
+    data_dir = Path(data_root) / base_case(case)     # a variant ("<base>@<name>") reads its base images
+    if ref_name and (data_dir / ref_name).is_file():
+        img_path = data_dir / ref_name
     else:
         for ext in ("*.png", "*.bmp", "*.jpg"):
-            candidates = [p for p in (Path(data_root) / case).glob(ext) if "background" not in p.name]
+            candidates = [p for p in data_dir.glob(ext) if "background" not in p.name]
             if candidates:
                 img_path = sorted(candidates)[0]
                 break
@@ -86,6 +88,7 @@ def build_all_rois_layout(case, profiles_root="outputs/projects", data_root="Dat
             "x": int(slot.x),
             "pitch": pitch,
             "x_offset": x_offset,
+            "side_margin": side_margin,      # needed to rebuild the same strip positions at inference
             "sigma": round(0.25 * slot.w, 3),
             "index": i,
         }
@@ -121,7 +124,7 @@ def extract_all_rois_predictions(case, all_rois, profiles_root="outputs/projects
     ]
     items = [(s, r["projection"]) for s, r in zip(slots, all_rois)]
 
-    data_dir = Path(data_root) / case
+    data_dir = Path(data_root) / base_case(case)
     labeled_files = []
     for ext in ("*.png", "*.bmp", "*.jpg"):
         for path in sorted(data_dir.glob(ext)):

@@ -366,7 +366,8 @@ def train_general(cache_root="outputs/features", profiles_root="outputs/projects
     from escount.features.cache import load_features, load_manifest
 
     config = load_general_config(config_path)
-    cases = cases or sorted(p.name for p in Path(cache_root).iterdir() if (p / "features.parquet").is_file())
+    cases = cases or sorted(p.name for p in Path(cache_root).iterdir()
+                           if (p / "features.parquet").is_file() and "@" not in p.name)   # variants never join General
     cases = active_projects(cases, config)
     tables = {case: load_features(case, cache_root) for case in cases}
     manifests = {}

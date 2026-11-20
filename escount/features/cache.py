@@ -17,6 +17,7 @@ import pandas as pd
 from escount.calibration.calibrate import PROFILE_NAME, ROTATED_MASK_NAME, ProjectProfile
 from escount.calibration.rotation_correction import rotate_image
 from escount.es_counting import file_sha256, list_images, parse_ground_truth, read_gray, scenario_dirs, write_json
+from escount.variants import base_case
 from escount.features.extract import (
     AugmentGrid, bank_items, config_hash, extent_slots, feature_config, image_features,
 )
@@ -74,7 +75,7 @@ def is_fresh(case_dir, manifest):
 def prepare(case, data_root="Data", profiles_root="outputs/projects", cache_root="outputs/features",
             workers=None, grid=AugmentGrid(), force=False):
     """Build (or reuse a fresh) feature cache for one case. Returns (parquet path, rebuilt flag)."""
-    case_dir = Path(data_root) / case
+    case_dir = Path(data_root) / base_case(case)       # a variant ("<base>@<name>") reads its base images
     profile_dir = Path(profiles_root) / case
     profile_path = profile_dir / PROFILE_NAME
     if not profile_path.is_file():

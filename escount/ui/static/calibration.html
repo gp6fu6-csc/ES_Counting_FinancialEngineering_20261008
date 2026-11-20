@@ -97,6 +97,18 @@
         <button @click="resetRois">恢復預設 ROI（有效區正中 3 組）</button>
       </template>
       <template v-else-if="tab === 'strips'">
+        <label class="field"><span>條帶方案（只存計片條帶）</span>
+          <select v-model="variantChoice" @change="pickVariant">
+            <option value="">(預設) 專案 project.json 的條帶</option>
+            <option v-for="v in variants" :key="v.name" :value="v.name">
+              {{ v.name }} · N={{ v.strip_params.n }} w={{ v.strip_params.w }} D={{ v.strip_params.pitch }}{{ v.runs.length ? ' · ' + v.runs.length + ' 次訓練' : '' }}</option>
+          </select>
+        </label>
+        <label class="field"><span>方案名稱（英數、_、-）</span>
+          <input type="text" maxlength="40" v-model="variantName" placeholder="例：n10_w30"></label>
+        <button :disabled="!variantName.trim() || !loadedReference || busy || !hasMask || maskEditing" @click="saveVariant">
+          {{ variants.some((v) => v.name === variantName.trim()) ? '更新方案' : '另存為新方案' }}</button>
+        <p class="legend">方案共用本專案「已儲存」的遮罩與旋轉校正，只各自保存下方條帶參數；到訓練頁勾選方案批次訓練。</p>
         <label class="field"><span>ROI 數量 N</span><input type="number" min="1" max="64" v-model.number="strips.n"></label>
         <label class="field"><span>ROI 寬度 w (px)</span><input type="number" min="1" v-model.number="strips.w"></label>
         <label class="field"><span>ROI 間距 D (px，需 &gt; 2w/3 = {{ (2 * strips.w / 3).toFixed(1) }})</span>
@@ -138,7 +150,8 @@
       </template>
       <div class="actions" v-if="tab !== 'ratio'">
         <button class="primary" :disabled="!loadedReference || busy || !hasMask || maskEditing" @click="preview">預覽</button>
-        <button :disabled="!loadedReference || busy || !hasMask || maskEditing" @click="save">儲存 project.json</button>
+        <button :disabled="!loadedReference || busy || !hasMask || maskEditing || variantChoice" @click="save"
+                :title="variantChoice ? '已選條帶方案：請先在「(b) 計片條帶」切回「(預設)」才能儲存 project.json' : ''">儲存 project.json</button>
       </div>
       <div class="result" v-if="result" aria-live="polite">
         <dl>

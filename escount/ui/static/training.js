@@ -13,9 +13,15 @@ const STEPS = [
 Vue.createApp({
   data() {
     return { apiKey: ESC.apiKey(), cases: [], caseId: "", device: "cuda", steps: STEPS,
-             status: {}, job: { log: [] }, error: "", timer: null };
+             status: {}, job: { log: [] }, error: "", timer: null,
+             variantId: "", overview: { projects: {}, variants: [] },
+             batch: { cases: [], variants: [], max_rois: 25, max_rows_per_image: 1000, trials: 0, track: "default",
+                      infer: true, note: "" } };
   },
   computed: {
+    fullCase() { return this.variantId ? `${this.caseId}@${this.variantId}` : this.caseId; },   // <case>[@<variant>]
+    variantNames() { return this.overview.projects[this.caseId] || []; },
+    batchPairs() { return this.batch.cases.length * this.batch.variants.length; },
     nextStep() {
       return ["calibrate", "prepare", "train", "select", "infer"].find((k) => !this.status[k]) || "results";
     },
@@ -28,11 +34,22 @@ Vue.createApp({
       this.cases = (await ESC.api("/calibration/cases")).cases;
       const wanted = ESC.lastCase();
       this.caseId = this.cases.includes(wanted) ? wanted : (this.cases[0] || "");
+      await this.loadOverview();
+      if (this.caseId && !this.batch.cases.length) this.batch.cases = [this.caseId];
       await this.refresh();
     } catch (e) { this.error = e.message; }
   },
   methods: {
     saveKey() { ESC.setApiKey(this.apiKey); },
+    async loadOverview() { this.overview = await ESC.api("/variants"); },
+    caseChanged() { this.variantId = ""; this.refresh(); },
+    async startBatch() {
+      try {
+        await ESC.api("/training/batch", { json: { ...this.batch, device: this.device } });
+        this.error = "";
+        await this.refresh();
+      } catch (e) { this.error = e.message; }
+    },
     canRun(key) {
       if (this.job.status === "running") return false;
       if (key === "all_rois") {
@@ -45,16 +62,17 @@ Vue.createApp({
       if (!this.caseId) return;
       ESC.setLastCase(this.caseId);
       try {
-        const info = await ESC.api(`/training/${encodeURIComponent(this.caseId)}/status`);
+        const info = await ESC.api(`/training/${encodeURIComponent(this.fullCase)}/status`);
         this.status = info.steps; this.job = info.job; this.error = "";
         this.$nextTick(() => { if (this.$refs.log) this.$refs.log.scrollTop = this.$refs.log.scrollHeight; });
         clearTimeout(this.timer);
         if (info.job.status === "running") this.timer = setTimeout(() => this.refresh(), 1500);
+        else await this.loadOverview();                       // a finished batch may have created variant folders
       } catch (e) { this.error = e.message; }
     },
     async run(step) {
       try {
-        await ESC.api(`/training/${encodeURIComponent(this.caseId)}/run`, { json: { step, device: this.device } });
+        await ESC.api(`/training/${encodeURIComponent(this.fullCase)}/run`, { json: { step, device: this.device } });
         this.error = "";
         await this.refresh();
       } catch (e) { this.error = e.message; }

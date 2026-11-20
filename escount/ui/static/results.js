@@ -32,7 +32,9 @@ const line = (name, data, color, extra = {}) =>
 Vue.createApp({
   data() {
     return {
-      apiKey: ESC.apiKey(), projects: [], caseId: "", models: [], model: "project", roiMode: "minimal",
+      apiKey: ESC.apiKey(), projects: [], caseId: "", variantOptions: [], variantChoice: "", pendingChoice: "", runInfo: null,
+      variantStrips: {},
+      models: [], model: "project", roiMode: "minimal",
       recommendedEnsemble: "", methodChoice: "auto", images: [], image: "",
       macd: { ema1: 2, ema2: 4, dea: 2 }, kd: { n: 4, k: 2, d: 2 }, overridden: false,
       result: null, roiIndex: 0, error: "", loading: false, requestId: 0, zoomKey: "",
@@ -41,6 +43,31 @@ Vue.createApp({
   },
   computed: {
     roi() { return this.result ? this.result.rois[this.roiIndex] : null; },
+    activeCase() { return this.variantChoice || this.caseId; },        // <case>[@<variant>[~<run>]]
+    runLines() {                               // what the selected variant / run was trained with (run.json)
+      const r = this.runInfo;
+      if (!r) return [];
+      const o = r.options || {}, s = r.strip_params || {}, m = r.model || {}, rs = r.research || {};
+      const hit = (p) => (p && p.hits !== null && p.hits !== undefined ? `${p.hits}/${p.total}` : "—");
+      const lines = [["計片條帶", `N=${s.n} w=${s.w} D=${s.pitch} 距邊=${s.side_margin} 位移=${s.x_offset}`]];
+      if (r.created) lines.unshift(["訓練時間", r.created], ["狀態", r.status || "—"]);
+      if (o.device) lines.push(["訓練選項", `裝置=${o.device} · 最多 ROI=${o.max_rois} · 每張取樣=${o.max_rows_per_image}`]);
+      if (m.method) {
+        lines.push(["模型", `${m.model_type} (${m.method === "ml" ? "ML" : "baseline"}) · 影像 ${m.images}`],
+          ["最少 ROI", `${m.minimal.roi_count} 組 · 完全命中 ${hit(m.minimal)}`],
+          ["全部 ROI", `${m.all_rois.roi_count} 組 · ${m.all_rois.recommended || "—"} · 完全命中 ${hit(m.all_rois)} · MAE ${m.all_rois.mae ?? "—"}`]);
+      }
+      if (r.created) {
+        const best = rs.best_params || {};
+        lines.push(["AutoResearch", rs.trials ? `${rs.track} · ${rs.trials} trials · ${rs.status}`
+          + (best.config_hash ? `（最佳 trial ${best.trial}，${best.config_hash}）` : "") : "未執行"]);
+        if (best.geometry) lines.push(["AutoResearch 最佳參數", `w=${best.geometry.w} D=${best.geometry.D} · ${best.model && best.model.kind}`]);
+      } else {
+        lines.push(["說明", "專案目前的 model/（最近一次訓練，未存成紀錄）"]);
+      }
+      if (r.note) lines.push(["備註", r.note]);
+      return lines;
+    },
     measuring() { return this.showHeight && this.result && this.result.has_height_model; },
     edgeMarks() {                              // where the computed height starts (top) and ends (bottom)
       return [["top", "▼ 頂部", this.roi.y_top], ["bottom", "底部 ▼", this.roi.y_bottom]]
@@ -159,9 +186,14 @@ Vue.createApp({
     for (const key of ["signal", "macd", "kd"]) observer.observe(this.$refs[key]);
     try {
       this.projects = (await ESC.api("/projects")).projects;
-      const wanted = ESC.lastCase();                                       // ?case=<id> or the last project
-      const first = this.projects.find((p) => p.has_model && p.case === wanted) || this.projects.find((p) => p.has_model);
-      if (first) { this.caseId = first.case; await this.loadCase(); }
+      const wanted = ESC.lastCase();                                       // ?case=<id>[@variant[~run]] or the last project
+      const usable = (p) => p.has_model || p.variants.length;
+      const first = this.projects.find((p) => usable(p) && p.case === wanted.split("@")[0]) || this.projects.find(usable);
+      if (first) {
+        this.caseId = first.case;
+        this.pendingChoice = wanted.startsWith(first.case + "@") ? wanted : "";
+        await this.loadCase();
+      }
     } catch (e) { this.error = e.message; }
   },
   methods: {
@@ -196,7 +228,7 @@ Vue.createApp({
       if (this.measurePoints.length < 2) return;
       const [y_a, y_b] = this.measurePoints;
       try {
-        this.measureResult = await ESC.api(`/results/${encodeURIComponent(this.caseId)}/height`, { json: { y_a, y_b } });
+        this.measureResult = await ESC.api(`/results/${encodeURIComponent(this.activeCase)}/height`, { json: { y_a, y_b } });
       } catch (e) { this.error = e.message; }
     },
 
@@ -212,11 +244,49 @@ Vue.createApp({
       img.style.transform = `scaleX(${scaleX}) translateX(${transX}%)`;
     },
 
+    async loadVariants() {                     // dropdown: default project, each variant's latest model and saved runs
+      const info = await ESC.api(`/variants/${encodeURIComponent(this.caseId)}`);
+      const options = [{ value: "", label: `(預設) project.json 條帶${info.default.has_model ? "" : "（未訓練）"}`,
+                         disabled: !info.default.has_model }];
+      for (const v of info.variants) {
+        const s = v.strip_params;
+        options.push({ value: v.case, label: `方案 ${v.name} · N=${s.n} w=${s.w} D=${s.pitch} · 目前模型${v.has_model ? "" : "（未訓練）"}`,
+                       disabled: !v.has_model });
+        for (const r of v.runs) options.push({ value: `${v.case}~${r.run}`, label: `　└ ${r.label}`, disabled: !r.has_model });
+      }
+      this.variantOptions = options;
+      this.variantStrips = Object.fromEntries(info.variants.map((v) => [v.case, v.strip_params]));
+      const wanted = this.pendingChoice || this.variantChoice;
+      this.pendingChoice = "";
+      const ok = options.find((o) => o.value === wanted && !o.disabled) || options.find((o) => !o.disabled);
+      this.variantChoice = ok ? ok.value : "";
+      await this.loadRunInfo();
+    },
+    async loadRunInfo() {                      // run.json of a saved run; a variant's latest model shows its strips only
+      this.runInfo = null;
+      const [variantCase, run] = this.variantChoice.split("~");
+      try {
+        if (run) this.runInfo = await ESC.api(`/runs/${encodeURIComponent(this.variantChoice)}`);
+        else if (variantCase.includes("@")) this.runInfo = { strip_params: this.variantStrips[variantCase] };
+      } catch (e) { this.error = e.message; }
+    },
+    async variantChanged() {                   // a different strips variant / training run: reload its model and results
+      this.overridden = false; this.roiIndex = 0; this.measurePoints = []; this.measureResult = null;
+      await this.loadRunInfo();
+      await this.loadImages();
+    },
     async loadCase() {
       this.error = ""; this.result = null; this.overridden = false; this.roiIndex = 0;
       this.measurePoints = []; this.measureResult = null;
       try {
-        const info = await ESC.api(`/results/${encodeURIComponent(this.caseId)}/images`);
+        await this.loadVariants();
+        await this.loadImages();
+      } catch (e) { this.error = e.message; }
+    },
+    async loadImages() {
+      this.error = "";
+      try {
+        const info = await ESC.api(`/results/${encodeURIComponent(this.activeCase)}/images`);
         this.images = info.images; this.models = info.models;
         if (!this.models.includes(this.model)) this.model = this.models[0] || "project";
         this.image = (info.images.find((i) => i.complete) || info.images[0] || {}).name || "";
@@ -236,7 +306,7 @@ Vue.createApp({
     async preview() {
       if (!this.caseId || !this.image) return;
       const id = ++this.requestId;
-      const body = { case: this.caseId, image: this.image, model: this.model, roi_mode: this.roiMode, method: this.methodChoice };
+      const body = { case: this.activeCase, image: this.image, model: this.model, roi_mode: this.roiMode, method: this.methodChoice };
       if (this.overridden) Object.assign(body, { macd: { ...this.macd }, kd: { ...this.kd } });
       this.loading = true;
       try {
@@ -288,7 +358,7 @@ Vue.createApp({
       kd.series = [line("RSV", k.rsv, C.rsv, { lineStyle: { width: 1, color: C.rsv, opacity: 0.6 } }),
                    line("K", k.k, C.k), line("D", k.d, C.d),
                    marks("黃金交叉", k.golden, k.k, C.up, "triangle"), marks("死亡交叉", k.death, k.k, C.down, "pin")];
-      const zoomKey = `${this.caseId}|${this.image}|${roi.key}`;
+      const zoomKey = `${this.activeCase}|${this.image}|${roi.key}`;
       const previous = zoomKey === this.zoomKey ? (charts.kd.getOption() || {}).dataZoom : null;
       this.zoomKey = zoomKey;
       for (const [key, option] of Object.entries({ signal, macd, kd })) {

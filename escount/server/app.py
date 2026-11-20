@@ -5,6 +5,9 @@
   POST /projects/{case}/load       load an InferenceEngine once ({"model": "project"|"general"}); becomes current
   POST /infer/path                 {"path": ..., "project"?, "model"?, "roi_mode"?, "method"?, "output"?} -> image read
                                    by the server; "output" (folder under output_root) also writes the `escount infer` files
+  GET  /variants[/{case}]          ROI-strip variants (+ saved runs); GET /runs/{case}@{variant}~{run} = run.json;
+                                   "case" of load / preview / results may be <project>@<variant>[~<run>] (escount.variants)
+  POST /calibration/{case}/variants/{name}   save only the strips as a variant;  POST /training/batch  run-variants job
   POST /infer/image                PNG/BMP bytes (multipart field "file" or raw body) -> cv2.imdecode
 OpenAPI / Swagger UI at /docs. Inference is serial (one lock), single-thread CPU, nothing is written.
 
@@ -53,11 +56,15 @@ from escount.es_counting import list_images, pick_reference, read_gray, read_mas
 from escount.height import MODEL_NAME, RATIO_NAME, load_model as load_height_model, read_points, save_points
 from escount.inference.engine import InferenceEngine
 from escount.signals.roi_bank import MIN_SIDE_MARGIN, build_roi_bank, check_geometry, stack_rows
+from escount.variants import (
+    VARIANT_SEP, base_case, check_name, list_runs, profile_case, read_run, run_model_dir, split_case, sync_variant,
+    variant_strips,
+)
 
 API_KEY_HEADER = "X-API-Key"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 PUBLIC_PATHS = frozenset({"/", "/health", "/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"})
-CASE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+CASE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@~-]*$")      # <case>[@<variant>[~<run>]], see escount.variants
 IMAGE_SUFFIXES = (".png", ".bmp")
 IMAGE_MAGIC = (b"\x89PNG\r\n\x1a\n", b"BM")
 GENERAL_MODELS = ("general", "general_no_ring")
@@ -171,7 +178,7 @@ class ServerState:
         return case_ids(self.data_root) if self.data_root.is_dir() else []
 
     def case_dir(self, case, need_mask=True):
-        folder = self.data_root / check_case(case)
+        folder = self.data_root / base_case(check_case(case))     # a variant reads its base project's images
         if not folder.is_dir() or (need_mask and not (folder / "background_BW.png").is_file()):
             raise HTTPException(404, f"project folder {case!r} with background_BW.png not found")
         return folder
@@ -223,9 +230,10 @@ class ServerState:
 
     def load(self, case, model="project", make_current=True):
         check_case(case)
+        _, _, run = split_case(case)
         try:
-            engine = InferenceEngine.load(self.profiles_root / case, model, self.profiles_root,
-                                          self.config.general_config)
+            engine = InferenceEngine.load(self.profiles_root / profile_case(case), model, self.profiles_root,
+                                          self.config.general_config, run=run)
         except FileNotFoundError as error:
             raise HTTPException(404, str(error)) from error
         except (ValueError, KeyError, StopIteration) as error:
@@ -238,10 +246,13 @@ class ServerState:
 
     def unload(self, case):
         """Drop every loaded engine of `case` (after its calibration changed)."""
+        base, variant, _ = split_case(case)
+        # a base project (recalibrated) drops its variants too; a variant drops itself and its saved runs
+        affected = lambda name: base_case(name) == base and (variant is None or profile_case(name) == profile_case(case))
         with self.lock:
-            for key in [key for key in self.engines if key[0] == case]:
+            for key in [key for key in self.engines if affected(key[0])]:
                 del self.engines[key]
-            if self.current and self.current[0] == case:
+            if self.current and affected(self.current[0]):
                 self.current = None
 
     def engine(self, project=None, model=None):
@@ -506,12 +517,15 @@ def create_app(config=ServerConfig()):
     def projects():
         items = []
         if state.profiles_root.is_dir():
-            for folder in sorted(p for p in state.profiles_root.iterdir() if (p / PROFILE_NAME).is_file()):
+            for folder in sorted(p for p in state.profiles_root.iterdir()
+                                 if (p / PROFILE_NAME).is_file() and VARIANT_SEP not in p.name):
                 profile = ProjectProfile.load(folder / PROFILE_NAME)
                 items.append({"case": folder.name, "quality_status": profile.quality_status,
                               "angle_deg": profile.angle_deg, "reference_image": profile.reference_image,
                               "has_model": (folder / "model" / "manifest.json").is_file(),
                               "selected_rois": len(profile.selected_rois),
+                              "variants": sorted(split_case(v.name)[1] for v in state.profiles_root.glob(f"{folder.name}{VARIANT_SEP}*")
+                                                  if (v / PROFILE_NAME).is_file()),
                               "loaded_models": sorted(m for c, m in state.engines if c == folder.name)})
         general = [name for name in GENERAL_MODELS if (state.profiles_root / name / "model" / "manifest.json").is_file()]
         current = _engine_info(*state.current, state.engines[state.current]) if state.current else None
@@ -705,6 +719,65 @@ def create_app(config=ServerConfig()):
                          "note": "geometry changed: re-run escount prepare / train / select-rois for this project "
                                  "(its trained models are refused until then)"})
 
+    # ------------------------------------------------------------ ROI-strip variants (escount.variants)
+    def variant_item(case):
+        folder = state.profiles_root / case
+        return {"name": split_case(case)[1], "case": case, "strip_params": variant_strips(case, state.profiles_root),
+                "has_model": (folder / "model" / "manifest.json").is_file(),
+                "runs": list_runs(case, state.profiles_root)}
+
+    @app.get("/variants")
+    def variants_overview():
+        """Every project's variants: {projects: {base: [names]}, variants: [{name, cases, strip_params}]} (training page)."""
+        projects, by_name = {}, {}
+        if state.profiles_root.is_dir():
+            for folder in sorted(state.profiles_root.glob(f"*{VARIANT_SEP}*")):
+                base, variant, _ = split_case(folder.name)
+                if variant and (folder / PROFILE_NAME).is_file():
+                    projects.setdefault(base, []).append(variant)
+                    entry = by_name.setdefault(variant, {"name": variant, "cases": [],
+                                                         "strip_params": variant_strips(folder.name, state.profiles_root)})
+                    entry["cases"].append(base)
+        return {"projects": projects, "variants": sorted(by_name.values(), key=lambda item: item["name"])}
+
+    @app.get("/variants/{case}")
+    def variants_of(case: str):
+        """Default project + every variant of one project with its saved runs (calibration / results pages)."""
+        base = base_case(check_case(case))
+        state.case_dir(base, need_mask=False)
+        default = {"case": base, "name": None, "has_model": (state.profiles_root / base / "model" / "manifest.json").is_file(),
+                   "strip_params": variant_strips(base, state.profiles_root), "runs": []}
+        names = sorted(split_case(folder.name)[1] for folder in state.profiles_root.glob(f"{base}{VARIANT_SEP}*")
+                       if (folder / PROFILE_NAME).is_file()) if state.profiles_root.is_dir() else []
+        return jsonable({"case": base, "default": default, "variants": [variant_item(f"{base}{VARIANT_SEP}{n}") for n in names]})
+
+    @app.get("/runs/{case}")
+    def run_record(case: str):
+        """run.json of one saved training run; `case` = <project>@<variant>~<run>."""
+        _, variant, run = split_case(check_case(case))
+        if not variant or not run:
+            raise HTTPException(422, f"{case!r} is not a saved run id (<project>@<variant>~<run>)")
+        try:
+            return jsonable(read_run(case, run, state.profiles_root))
+        except FileNotFoundError as error:
+            raise HTTPException(404, str(error)) from error
+
+    @app.post("/calibration/{case}/variants/{name}")
+    def calibration_variant_save(case: str, name: str, body: CalibrationBody):
+        """Save only the counting strips of `body` as variant <name> of the project (rotation / mask stay shared)."""
+        checked = state.calibration(case, body)
+        try:
+            check_name(name)
+            sync_variant(f"{case}{VARIANT_SEP}{name}", state.profiles_root, strips=checked["strip_params"])
+        except FileNotFoundError as error:
+            raise HTTPException(409, f"請先在校正頁儲存 project.json（旋轉校正）：{error}") from error
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        variant = f"{case}{VARIANT_SEP}{name}"
+        state.unload(variant)
+        return jsonable({"saved": True, "case": variant, "strip_params": checked["strip_params"],
+                         "path": str((state.profiles_root / variant / PROFILE_NAME).resolve()),
+                         "note": "旋轉校正取自已儲存的 project.json；方案只儲存計片條帶。請到訓練頁以此方案訓練。"})
     # ------------------------------------------------------------ results page (Task 12, PDF p13-14)
     @app.get("/results/{case}/images")
     def results_images(case: str):
@@ -727,9 +800,11 @@ def create_app(config=ServerConfig()):
             gt = parse_ground_truth(path.name)
             images.append({"name": path.name, "gt": gt["count"] if gt else None, "complete": complete,
                            "stored_N_pred": stored})
+        _, _, run = split_case(case)
+        model_dir = run_model_dir(case, run, state.profiles_root) if run else state.profiles_root / profile_case(case) / "model"
         models = [name for name, ok in (
-            ("project", (state.profiles_root / case / "model" / "manifest.json").is_file()),
-            ("general", any((state.profiles_root / g / "model" / "manifest.json").is_file() for g in GENERAL_MODELS)),
+            ("project", (model_dir / "manifest.json").is_file()),
+            ("general", not run and any((state.profiles_root / g / "model" / "manifest.json").is_file() for g in GENERAL_MODELS)),
         ) if ok]
         return {"case": case, "images": images, "models": models, "results_root": str(out_root.resolve())}
 
@@ -737,7 +812,7 @@ def create_app(config=ServerConfig()):
     def results_height(case: str, body: HeightBody):
         """Height between any two rows (results page measuring lines); 404 without height_model.json."""
         state.case_dir(case, need_mask=False)
-        model = load_height_model(state.profiles_root / case)
+        model = load_height_model(state.profiles_root / profile_case(case))
         if model is None:
             raise HTTPException(404, f"project {case!r} has no {MODEL_NAME}")
         top, bottom = sorted((body.y_a, body.y_b))
@@ -773,6 +848,7 @@ def create_app(config=ServerConfig()):
     job_lock = threading.Lock()
 
     def step_status(case):
+        case = profile_case(case)                          # a saved run has no steps of its own
         model_manifest = state.profiles_root / case / "model" / "manifest.json"
         selected = False
         all_rois = False
@@ -808,6 +884,10 @@ def create_app(config=ServerConfig()):
             job["returncode"] = -1
         if step in ("train", "select", "all_rois"):
             state.unload(case)                            # next preview / infer loads the new model
+        elif step == "batch":
+            with state.lock:                              # every project / variant was retrained
+                state.engines.clear()
+                state.current = None
         job["status"] = "done" if job["returncode"] == 0 else "failed"
 
     @app.get("/training/{case}/status")
@@ -847,5 +927,43 @@ def create_app(config=ServerConfig()):
         threading.Thread(target=run_job, args=(case, body.step, args), daemon=True).start()
         return {"started": body.step, "case": case}
 
+    class BatchRequest(BaseModel):
+        cases: list[str] = Field(min_length=1, max_length=50)
+        variants: list[str] = Field(min_length=1, max_length=20)
+        device: Literal["cuda", "cpu"] = "cuda"
+        max_rois: int = Field(25, ge=1, le=200)
+        max_rows_per_image: int = Field(1000, ge=10, le=100000)
+        trials: int = Field(0, ge=0, le=500)
+        track: Literal["default", "mae", "exact", "ensemble"] = "default"
+        infer: bool = True
+        note: str = Field("", max_length=200)
+
+    @app.post("/training/batch")
+    def training_batch(body: BatchRequest):
+        """Train every selected project x ROI-strip variant one after the other (`escount run-variants`)."""
+        for case in body.cases:
+            state.case_dir(case)
+            if VARIANT_SEP in case or not (state.profiles_root / case / PROFILE_NAME).is_file():
+                raise HTTPException(409, f"{case}: 請先在校正頁儲存 project.json（只能選專案本身，不含方案）")
+        for name in body.variants:
+            try:
+                check_name(name)
+            except ValueError as error:
+                raise HTTPException(422, str(error)) from error
+            if not any(state.profiles_root.glob(f"*{VARIANT_SEP}{name}")):
+                raise HTTPException(409, f"方案 {name!r} 不存在：請先在校正頁「計片條帶」另存方案")
+        args = ["run-variants", "--projects", *body.cases, "--variants", *body.variants, "--device", body.device,
+                "--max-rois", str(body.max_rois), "--max-rows-per-image", str(body.max_rows_per_image),
+                "--trials", str(body.trials), "--track", body.track, "--note", body.note,
+                "--data-root", str(state.data_root), "--profiles-root", str(state.profiles_root),
+                "--cache-root", str(config.features_root), "--results-root", str(config.results_root)]
+        if not body.infer:
+            args.append("--no-infer")
+        with job_lock:
+            if job["status"] == "running":
+                raise HTTPException(409, f"已有工作執行中：{job['case']} / {job['step']}")
+            job.update(case="batch", step="batch", status="running", log=[], returncode=None)
+        threading.Thread(target=run_job, args=("batch", "batch", args), daemon=True).start()
+        return {"started": "batch", "pairs": len(body.cases) * len(body.variants)}
     app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
     return app

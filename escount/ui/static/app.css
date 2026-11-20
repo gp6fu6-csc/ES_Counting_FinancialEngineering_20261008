@@ -219,3 +219,22 @@ select option { font-size: 1.1rem; }
   font-weight: 700;
   font-size: 0.95rem;
 }
+
+/* ROI-strip variants (calibration / training / results pages) */
+.run-info { font-size: 0.9rem; color: var(--muted); }
+.run-info summary { cursor: pointer; }
+.run-info dl { margin: 0.4rem 0 0; display: grid; grid-template-columns: auto 1fr; gap: 0.2rem 0.6rem; }
+.run-info dt { color: var(--muted); }
+.run-info dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.checks { display: flex; flex-direction: column; gap: 0.25rem; max-height: 11rem; overflow: auto; padding: 0.3rem;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.checks label { display: flex; align-items: center; gap: 0.5rem; }
+.checks input { width: auto; }
+.batch { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 0.7rem; margin-bottom: 0.7rem; }
+.help { border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.9rem; background: var(--panel-2);
+  color: var(--muted); font-size: 0.95rem; }
+.help summary { cursor: pointer; color: var(--text); font-weight: 600; }
+.help dt { color: var(--text); margin-top: 0.5rem; font-weight: 600; }
+.help dd { margin: 0.1rem 0 0; }
+.check { display: flex; align-items: center; gap: 0.5rem; color: var(--muted); margin-top: 0.4rem; }
+.check input { width: auto; }

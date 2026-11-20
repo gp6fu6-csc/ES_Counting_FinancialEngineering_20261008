@@ -13,6 +13,9 @@
   escount report [--out outputs/research_report] -> presentation report (<timestamp>/ and latest/)
   escount adopt <case>                    -> archive candidates/<case>/ in outputs/projects/<case>/research/
                                              (record only: inference keeps using train + select-rois model/)
+  escount variant create|list --project <id> ...  -> ROI-strip variants (shared calibration, own strips)
+  escount run-variants --projects A B --variants v1 v2 [--trials N ...]
+                                          -> train every project x variant in turn, save runs/<run>/run.json
   escount serve [--host 127.0.0.1] [--port 8000] [--api-key K | env ESCOUNT_API_KEY] [--root Data]
                                           -> FastAPI inference server (LabVIEW), OpenAPI at /docs
 The migrated V3 pipelines stay reachable unchanged:
@@ -27,6 +30,7 @@ from pathlib import Path
 
 from escount import __version__
 
+TRACKS = ("default", "mae", "exact", "ensemble")   # = escount.runs.TRACK_DIRS keys (lazy import)
 LEGACY = {
     "legacy-count": "escount.es_counting",
     "legacy-rotate": "escount.calibration.rotation_correction",
@@ -42,6 +46,47 @@ def resolve_project(project, data_root):
     if candidate.is_dir():
         return candidate.resolve()
     raise SystemExit(f"escount: project {project!r} not found (neither a directory nor a case under {data_root})")
+
+
+def resolve_case(project, data_root):
+    """Case id of a project argument: a Data folder name, a folder path, or a variant id "<case>@<variant>"."""
+    from escount.variants import split_case, variant_case
+
+    path = Path(project)
+    raw = path.name if path.is_dir() else project
+    base, variant, _ = split_case(raw)
+    name = resolve_project(str(path) if path.is_dir() else base, data_root).name
+    return variant_case(name, variant)
+
+
+def _apply_variant(args):
+    """--variant NAME (or --project <case>@NAME): create / refresh the variant's profile folder from its base project
+    (shared rotation calibration, own strips) and continue with the variant's case id."""
+    from escount.variants import split_case, sync_variant, variant_case
+
+    project, variant = getattr(args, "project", None), getattr(args, "variant", None)
+    if args.command in ("calibrate", "copy-params", "batch", "variant", "evaluate") or not hasattr(args, "profiles_root"):
+        return
+    if variant and not project:
+        raise SystemExit(f"escount {args.command}: --variant needs --project <case>")
+    if not project or Path(project).is_dir():
+        if variant:
+            raise SystemExit(f"escount {args.command}: --variant needs a case id, not a folder path")
+        return
+    base, embedded, run = split_case(project)
+    variant = variant or embedded
+    if run:
+        if args.command != "infer" or getattr(args, "run", None):
+            raise SystemExit(f"escount {args.command}: a saved run ('~{run}') can only be used with infer --run")
+        args.run = run
+    if not variant:
+        return
+    case = variant_case(base, variant)
+    try:
+        sync_variant(case, args.profiles_root)
+    except (ValueError, FileNotFoundError) as error:
+        raise SystemExit(f"escount {args.command}: {error}") from error
+    args.project = case
 
 
 def cmd_copy_params(args):
@@ -104,6 +149,18 @@ def cmd_copy_params(args):
     return status
 
 
+def cmd_variant(args):
+    from escount.runs import cmd_variant as run
+
+    return run(args)
+
+
+def cmd_run_variants(args):
+    from escount.runs import cmd_run_variants as run
+
+    return run(args)
+
+
 def cmd_batch(args):
     from escount.batch import run_batch
 
@@ -139,7 +196,7 @@ def _case_list(args):
 
     if getattr(args, "all", False) or not args.project:
         return case_ids(args.data_root)
-    return [resolve_project(args.project, args.data_root).name]
+    return [resolve_case(args.project, args.data_root)]
 
 
 def _active_case_list(args):
@@ -154,7 +211,7 @@ def _active_case_list(args):
             print(f"skipping excluded_projects {skipped} ({args.config})")
         return active_projects(cases, config)
     try:
-        check_active(cases[0], config)
+        check_active(cases[0].split("@")[0], config)
     except ValueError as error:
         raise SystemExit(f"escount {args.command}: {error} ({args.config})") from error
     return cases
@@ -222,7 +279,7 @@ def cmd_select_rois(args):
                                            args.config).items():
             _print_selection(name, result)
     else:
-        case = resolve_project(args.project, args.data_root).name
+        case = resolve_case(args.project, args.data_root)
         _print_selection(case, select_project(case, args.cache_root, args.profiles_root, args.device, args.max_rois))
     return 0
 
@@ -230,7 +287,7 @@ def cmd_select_rois(args):
 def cmd_all_rois(args):
     from escount.models.all_rois import train_all_rois
 
-    case = resolve_project(args.project, args.data_root).name
+    case = resolve_case(args.project, args.data_root)
     info = train_all_rois(case, args.profiles_root, args.data_root, args.device)
     rec = info["recommended"]
     eval_rec = info["evaluation"].get(rec, {})
@@ -243,7 +300,7 @@ def cmd_benchmark(args):
     from escount.inference.benchmark import benchmark
 
     try:
-        report = benchmark(resolve_project(args.project, args.data_root).name, args.data_root, args.profiles_root)
+        report = benchmark(resolve_case(args.project, args.data_root), args.data_root, args.profiles_root)
     except (FileNotFoundError, ValueError) as error:
         raise SystemExit(f"escount benchmark: {error}") from error
     for item in report["per_image"]:
@@ -266,12 +323,13 @@ def cmd_infer(args):
     except ValueError as error:
         raise SystemExit(f"escount infer: {error}") from error
     case = Path(args.project).name if Path(args.project).is_dir() else args.project
-    output = Path(args.output) if args.output else Path("outputs") / "infer" / case
+    run = getattr(args, "run", None)
+    output = Path(args.output) if args.output else Path("outputs") / "infer" / (f"{case}~{run}" if run else case)
     previous = cv2.getNumThreads()
     cv2.setNumThreads(1)                      # single-process, single-thread CPU (as in `escount benchmark`)
     try:
         with threadpool_limits(limits=1):
-            engine = InferenceEngine.load(case, args.model, args.profiles_root, args.config)
+            engine = InferenceEngine.load(case, args.model, args.profiles_root, args.config, run=run)
             results = engine.run(args.input, output, options, method=args.method, roi_mode=args.roi_mode)
     except (FileNotFoundError, ValueError) as error:
         raise SystemExit(f"escount infer: {error}") from error
@@ -381,6 +439,10 @@ def _common(command, cache=True):
         command.add_argument("--cache-root", default="outputs/features", help="feature cache (default: outputs/features)")
 
 
+def _variant_option(command):
+    command.add_argument("--variant", help="ROI-strip variant of --project (same as --project <case>@<variant>); created from the base project if missing")
+
+
 def _target(command, general=False):
     group = command.add_mutually_exclusive_group(required=True)
     group.add_argument("--project", help="case id (Data folder name) or project folder path")
@@ -389,6 +451,7 @@ def _target(command, general=False):
                            help="General model(s): general (+ general_no_ring while Ring-type is active)")
     else:
         group.add_argument("--all", action="store_true", help="every case under --data-root")
+    _variant_option(command)
 
 
 def build_parser():
@@ -478,18 +541,22 @@ def build_parser():
 
     all_rois = sub.add_parser("all-rois", help="train multi-ROI ensemble on all counting strips (strip_params)")
     all_rois.add_argument("--project", required=True, help="case id or project folder path")
+    _variant_option(all_rois)
     _common(all_rois)
     all_rois.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
     all_rois.set_defaults(func=cmd_all_rois)
 
     bench = sub.add_parser("benchmark", help="single-thread CPU latency of the selected ROIs (< 1 s per image)")
     bench.add_argument("--project", required=True, help="case id or project folder path")
+    _variant_option(bench)
     _common(bench, cache=False)
     bench.set_defaults(func=cmd_benchmark)
 
     infer = sub.add_parser("infer", help="InferenceEngine on an image file or folder (single-process CPU)")
     infer.add_argument("--project", required=True, help="case id (profile under --profiles-root) or profile folder")
     infer.add_argument("--input", required=True, help="image file or folder of PNG images")
+    _variant_option(infer)
+    infer.add_argument("--run", help="saved training run of the variant (runs/<run>/model, see run.json); default: latest model/")
     infer.add_argument("--output", help="output folder (default: outputs/infer/<case>)")
     infer.add_argument("--method", choices=("auto", "baseline", "kd", "macd", "xgboost", "ridge", "trimmed_mean"), default="auto",
                        help="prediction method override (default: auto)")
@@ -536,6 +603,35 @@ def build_parser():
     adopt.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")
     adopt.set_defaults(func=cmd_adopt)
 
+    variant = sub.add_parser("variant", help="ROI-strip variants of a project: create / list (shared calibration, own strips)")
+    variant.add_argument("action", choices=("create", "list"))
+    variant.add_argument("--project", required=True, help="base case id")
+    variant.add_argument("--name", help="variant name (create)")
+    variant.add_argument("--copy-from", help="start from the strips of this case / variant (create; default: the base project's strips)")
+    for key, text in (("n", "strip count N"), ("w", "strip width px"), ("pitch", "strip pitch D px"),
+                      ("side_margin", "distance from the valid-region edge px (>= 50)"), ("x_offset", "horizontal offset px")):
+        variant.add_argument(f"--{key.replace('_', '-')}", dest=key, type=int, help=text)
+    variant.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")
+    variant.set_defaults(func=cmd_variant)
+
+    runs = sub.add_parser("run-variants", help="train every project x ROI-strip variant one after the other "
+                                                "(prepare, train, select-rois, all-rois, infer) and save each run (run.json)")
+    runs.add_argument("--projects", nargs="+", required=True, help="case ids (Data folder names)")
+    runs.add_argument("--variants", nargs="+", required=True, help="variant names (created for a project from the first project that has it)")
+    runs.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
+    runs.add_argument("--max-rois", type=int, default=25, help="upper bound of the minimal-ROI selection (default 25)")
+    runs.add_argument("--max-rows-per-image", type=int, default=1000, help="training rows per image (default 1000)")
+    runs.add_argument("--workers", type=int, default=None, help="feature worker processes (default: os.cpu_count())")
+    runs.add_argument("--trials", type=int, default=0, help="AutoResearch (Optuna) trials per project before training; 0 = skip (default)")
+    runs.add_argument("--track", choices=TRACKS, default="default", help="AutoResearch track (with --trials)")
+    runs.add_argument("--no-infer", action="store_true", help="skip step infer (analyse every image into --results-root)")
+    runs.add_argument("--note", default="", help="free text stored in run.json")
+    runs.add_argument("--data-root", default="Data", help="root folder of case ids (default: Data)")
+    runs.add_argument("--cache-root", default="outputs/features", help="feature cache (default: outputs/features)")
+    runs.add_argument("--results-root", default="outputs/infer", help="infer outputs <case>~<run>/ (default: outputs/infer)")
+    _research_paths(runs)
+    runs.set_defaults(func=cmd_run_variants)
+
     serve = sub.add_parser("serve", help="FastAPI inference server + web UI (default 127.0.0.1:8000)")
     serve.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1; others need --api-key)")
     serve.add_argument("--port", type=int, default=8000, help="port (default 8000)")
@@ -568,6 +664,7 @@ def main(argv=None):
     if not getattr(args, "func", None):
         parser.print_help()
         return 0
+    _apply_variant(args)
     return args.func(args)
 
 

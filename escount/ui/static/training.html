@@ -23,9 +23,15 @@
   <main class="layout results">
     <aside class="panel side" aria-label="專案">
       <label class="field"><span>選擇資料夾</span>
-        <select v-model="caseId" @change="refresh">
+        <select v-model="caseId" @change="caseChanged">
           <option disabled value="">— 選擇專案 —</option>
           <option v-for="c in cases" :key="c" :value="c">{{ c }}</option>
+        </select>
+      </label>
+      <label class="field"><span>條帶方案（逐步訓練用）</span>
+        <select v-model="variantId" @change="refresh" :disabled="!caseId">
+          <option value="">(預設) 專案 project.json</option>
+          <option v-for="v in variantNames" :key="v" :value="v">{{ v }}</option>
         </select>
       </label>
       <label class="field"><span>訓練裝置</span>
@@ -35,9 +41,82 @@
         </select>
       </label>
       <p class="hint">依序完成 0 → 4。每一步完成後，下一步的按鈕才會啟用。同一時間只能執行一個工作。</p>
+      <p class="hint">下方「ROI 方案批次訓練」可一次訓練多個資料夾 × 多個條帶方案，並保留每次訓練的設定與結果。</p>
     </aside>
 
     <section class="panel main" aria-label="訓練步驟">
+      <h2>ROI 方案批次訓練（多資料夾 × 多條帶方案，依序執行）</h2>
+      <div class="batch">
+        <div class="field"><span>資料夾（可複選）</span>
+          <div class="checks" role="group" aria-label="資料夾">
+            <label v-for="c in cases" :key="c"><input type="checkbox" :value="c" v-model="batch.cases"> {{ c }}</label>
+          </div>
+        </div>
+        <div class="field"><span>條帶方案（可複選）</span>
+          <div class="checks" role="group" aria-label="條帶方案">
+            <label v-for="v in overview.variants" :key="v.name"><input type="checkbox" :value="v.name" v-model="batch.variants">
+              {{ v.name }} · N={{ v.strip_params.n }} w={{ v.strip_params.w }} D={{ v.strip_params.pitch }}</label>
+            <span class="hint" v-if="!overview.variants.length">尚無方案：到校正頁「(b) 計片條帶」另存。</span>
+          </div>
+        </div>
+        <div>
+          <label class="field"><span>最多 ROI（最少 ROI 挑選上限）</span>
+            <input type="number" min="1" max="200" v-model.number="batch.max_rois"></label>
+          <label class="field"><span>每張影像訓練取樣列數</span>
+            <input type="number" min="10" max="100000" v-model.number="batch.max_rows_per_image"></label>
+        </div>
+        <div>
+          <label class="field"><span>AutoResearch trials（0 = 不執行）</span>
+            <input type="number" min="0" max="500" v-model.number="batch.trials"></label>
+          <label class="field"><span>AutoResearch 軌道</span>
+            <select v-model="batch.track" :disabled="!batch.trials">
+              <option value="default">default（完全命中率）</option>
+              <option value="mae">mae（最小平均誤差）</option>
+              <option value="exact">exact（Soft-loss + 分類器）</option>
+              <option value="ensemble">ensemble（低資源 ML 混合）</option>
+            </select></label>
+        </div>
+        <div>
+          <label class="field"><span>備註（存入 run.json）</span>
+            <input type="text" maxlength="200" v-model="batch.note" placeholder="例：第二批、新增影像後"></label>
+          <label class="check"><input type="checkbox" v-model="batch.infer"> 訓練後分析全部影像（結果頁需要）</label>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="primary" @click="startBatch" :disabled="job.status === 'running' || !batchPairs">
+          開始批次訓練（{{ batchPairs }} 組：{{ batch.cases.length }} 資料夾 × {{ batch.variants.length }} 方案，裝置 {{ device }}）</button>
+        <a v-if="batch.cases.length" :href="'/ui/results.html?case=' + encodeURIComponent(batch.cases[0])"><button>前往結果頁</button></a>
+      </div>
+      <details class="help">
+        <summary>批次訓練參數與輸出位置說明</summary>
+        <dl>
+          <dt>資料夾 × 條帶方案</dt>
+          <dd>每個「資料夾 + 方案」各訓練一次（依序，不並行），例如 2 個資料夾 × 3 個方案 = 6 次。方案若在某資料夾尚不存在，會沿用另一資料夾同名方案的條帶參數自動建立。方案共用資料夾已儲存的遮罩與旋轉校正，只改計片條帶（N、w、D、距邊、位移）。</dd>
+          <dt>條帶方案影響什麼</dt>
+          <dd>條帶只決定「全部 ROI」模式的 N 組條帶與其整合模型；「最少 ROI」是從候選庫自動挑選，不隨條帶改變，同一資料夾各方案的最少 ROI 結果會接近。每次訓練仍完整執行 1 → 4 步。</dd>
+          <dt>最多 ROI（--max-rois）</dt>
+          <dd>最少 ROI 貪婪挑選的組數上限（預設 25，通常只會選出 2–8 組）。</dd>
+          <dt>每張影像訓練取樣列數（--max-rows-per-image）</dt>
+          <dd>每張影像最多取多少列 ROI 特徵訓練模型（預設 1000）。調高訓練較慢但資料較完整。</dd>
+          <dt>AutoResearch trials（--trials）</dt>
+          <dd>Optuna TPE 超參數搜尋的次數。每個 trial 為一組候選設定：條帶寬度 w、間距 D、使用的財務指標、模型種類與參數、聚合方式、ROI 上限；以「留一影像（LOIO）完全命中率」評分，命中率最高者寫入 best_params.json。0 代表略過。同一資料夾只搜尋一次（它自行搜尋 w、D，與條帶方案無關），同一個 Optuna 資料庫可重複執行並累加 trials（可續跑）。建議先用 3–5 次試跑，再依耗時調高。</dd>
+          <dt>AutoResearch 軌道（--track）</dt>
+          <dd>default＝完全命中率；mae＝最小平均絕對誤差；exact＝Soft-loss + 分類器；ensemble＝低資源多模型混合。搜尋結果只「記錄」到每次訓練的 run.json 供比對，不會自動取代推論用模型。</dd>
+          <dt>訓練裝置</dt>
+          <dd>左側選擇 GPU(CUDA) 或 CPU；沒有可用 GPU 時 XGBoost 自動改用 CPU。</dd>
+          <dt>分析全部影像（infer）</dt>
+          <dd>訓練後以該模型分析資料夾所有影像，結果頁才會顯示預測與 ✱ 標記。</dd>
+          <dt>輸出位置</dt>
+          <dd>
+            模型（最近一次）：outputs/projects/&lt;資料夾&gt;@&lt;方案&gt;/model/<br>
+            每次訓練的紀錄與模型備份：outputs/projects/&lt;資料夾&gt;@&lt;方案&gt;/runs/&lt;時間&gt;/（run.json、model/）<br>
+            特徵快取：outputs/features/&lt;資料夾&gt;@&lt;方案&gt;/<br>
+            分析結果：outputs/infer/&lt;資料夾&gt;@&lt;方案&gt;~&lt;時間&gt;/<br>
+            AutoResearch：candidates/&lt;資料夾&gt;/best_params.json、research/（結果頁「條帶方案 / 訓練紀錄」可切換檢視）
+          </dd>
+        </dl>
+      </details>
+      <h2>逐步訓練（目前方案：{{ variantId || '預設' }}）</h2>
       <ol class="steps" v-if="caseId">
         <li v-for="s in steps" :key="s.key" :class="{ done: status[s.key], next: s.key === nextStep }">
           <div class="step-head">
@@ -49,7 +128,7 @@
             <button>前往校正頁</button></a>
           <a v-else-if="s.key === 'height'" :href="'/ui/calibration.html?tab=ratio&case=' + encodeURIComponent(caseId)">
             <button>前往比例校正</button></a>
-          <a v-else-if="s.key === 'results'" :href="'/ui/results.html?case=' + encodeURIComponent(caseId)">
+          <a v-else-if="s.key === 'results'" :href="'/ui/results.html?case=' + encodeURIComponent(fullCase)">
             <button :disabled="!status.select">前往結果頁</button></a>
           <div v-else-if="s.key === 'select'" style="display: flex; gap: 8px; flex-wrap: wrap;">
             <button @click="run('select')" :disabled="!canRun('select')">

@@ -14,6 +14,7 @@ Vue.createApp({
       imageSize: { width: 0, height: 0 }, validRegion: null, defaultRois: [], minSide: 300, minMargin: 50,
       rois: [], selected: 1, side: 384, step: 10,
       strips: { n: 4, w: 16, pitch: 30, side_margin: 50, x_offset: 0 },
+      defaultStrips: { n: 4, w: 16, pitch: 30, side_margin: 50, x_offset: 0 }, variants: [], variantChoice: "", variantName: "",
       tab: "mask", result: null, error: "", message: "", busy: false, drag: null, requestId: 0,
       hasMask: false, maskEditing: false, maskPoints: [], maskClosed: false, hover: null,
       hasRatio: false, profileAngle: null, ratioPoints: emptyRatio(), ratioList: { side: "left", kind: "10" },
@@ -51,6 +52,9 @@ Vue.createApp({
         Object.assign(this, { images: info.images, imageSize: info.image_size, validRegion: info.valid_region,
           defaultRois: info.default_rois, minSide: info.min_side, minMargin: info.min_side_margin,
           strips: Object.assign({}, info.strips) });
+        this.defaultStrips = Object.assign({}, info.strips);
+        this.variantChoice = ""; this.variantName = "";
+        await this.loadVariants();
         const profile = info.profile;
         this.hasRatio = info.images.includes("ratio.png");
         this.profileAngle = profile ? profile.angle_deg : null;
@@ -63,6 +67,28 @@ Vue.createApp({
         await this.loadReference();
         if (this.tab === "ratio") await this.loadRatio();
       } catch (e) { this.error = e.message; }
+    },
+
+    // ---------------------------------------------------------------- strip variants (only the counting strips are stored)
+    async loadVariants() {
+      try { this.variants = (await ESC.api(`/variants/${encodeURIComponent(this.caseId)}`)).variants; }
+      catch (e) { this.variants = []; }
+    },
+    pickVariant() {                             // load the strips of a variant (or the project's default) into the form
+      const variant = this.variants.find((v) => v.name === this.variantChoice);
+      this.strips = Object.assign({}, variant ? variant.strip_params : this.defaultStrips);
+      this.variantName = variant ? variant.name : "";
+    },
+    async saveVariant() {
+      this.message = ""; this.busy = true;
+      const name = this.variantName.trim();
+      try {
+        const saved = await ESC.api(`/calibration/${encodeURIComponent(this.caseId)}/variants/${encodeURIComponent(name)}`,
+                                    { json: this.body() });
+        await this.loadVariants();
+        this.variantChoice = name;
+        this.message = `已儲存方案 ${saved.case}\n${saved.note}`; this.error = "";
+      } catch (e) { this.error = e.message; } finally { this.busy = false; }
     },
 
     async loadReference() {

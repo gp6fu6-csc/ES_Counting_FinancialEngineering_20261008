@@ -59,7 +59,7 @@ class ProjectRuntime:
         self.valid_x0, self.valid_width = x0, x1 - x0
 
     @classmethod
-    def load(cls, case, profiles_root="outputs/projects", single_thread=True):
+    def load(cls, case, profiles_root="outputs/projects", single_thread=True, model_dir=None):
         from escount.calibration.calibrate import PROFILE_NAME, ROTATED_MASK_NAME, ProjectProfile
         from escount.es_counting import read_gray
         from escount.features.extract import AugmentGrid, config_hash, extent_slots, feature_config
@@ -71,7 +71,8 @@ class ProjectRuntime:
         case_dir = Path(profiles_root) / case
         profile = ProjectProfile.load(case_dir / PROFILE_NAME)
         mask = read_gray(case_dir / ROTATED_MASK_NAME)
-        model, manifest = load_model(case_dir / "model", single_thread=single_thread)
+        model_dir = Path(model_dir) if model_dir else case_dir / "model"      # model_dir: a saved run of a variant
+        model, manifest = load_model(model_dir, single_thread=single_thread)
         check_profile_fingerprint(manifest, case, profile, case_dir / ROTATED_MASK_NAME)
         if not manifest.get("selected_rois"):
             raise ValueError(f"{case}: no selected_rois in the model manifest; run `escount select-rois --project {case}`")
@@ -92,14 +93,15 @@ class ProjectRuntime:
         all_spec = manifest.get("all_rois")
         if all_spec:
             for roi in all_spec:
-                bank = build_roi_bank(mask, (roi["w"],), pitch=roi["pitch"], side_margin=grid.side_margin,
+                bank = build_roi_bank(mask, (roi["w"],), pitch=roi["pitch"],
+                                      side_margin=roi.get("side_margin", grid.side_margin),   # older models: grid margin
                                       x_offset=roi["x_offset"])
                 slot = next((s for s in bank if s.x == roi["x"]), None)
                 if slot is not None:
                     all_items.append((slot, roi["projection"]))
 
         ensemble_meta = None
-        ens_file = case_dir / "model" / "model_all_rois_ensemble.joblib"
+        ens_file = model_dir / "model_all_rois_ensemble.joblib"
         if ens_file.is_file():
             try:
                 import joblib
@@ -217,10 +219,11 @@ def benchmark(case, data_root="Data", profiles_root="outputs/projects", write=Tr
     single_thread()
     from escount.es_counting import read_gray, write_json
     from escount.features.cache import labelled_images
+    from escount.variants import base_case
 
     runtime = ProjectRuntime.load(case, profiles_root, single_thread=True)   # excluded from timing
     per_image = []
-    for path, gt in labelled_images(Path(data_root) / case):
+    for path, gt in labelled_images(Path(data_root) / base_case(case)):
         start = time.perf_counter()
         gray = read_gray(path)
         read_ms = 1000.0 * (time.perf_counter() - start)
