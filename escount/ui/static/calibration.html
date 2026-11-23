@@ -138,11 +138,12 @@
           <summary>規則說明</summary>
           <ul>
             <li>先點選 10 / 5 / 1 mm 下方的列表框（左右兩側各自點選）。</li>
-            <li>10 mm、5 mm：依序點選每個 10 mm / 5 mm 圖示，程式儲存其 XY 座標。</li>
-            <li>1 mm：點選每個 5 mm 後的第一個 1 mm 圖示。</li>
-            <li>左鍵點選列表中的座標點：圖上以由右向左的箭頭標示該點；再點圖片即在該點之後新增座標。</li>
+            <li>10 mm、5 mm、1 mm 三個列表各自由上到下依序點選畫面中每個對應刻度，程式儲存其 XY 座標。</li>
+            <li>1/5/10 mm 為倍數關係，同一位置會重複點選屬正常；請盡量準確標註。比例以 1 mm 點為準，5/10 mm 點用來檢查（差異大於 3% 會警告）。</li>
+            <li>畫面無法完整涵蓋 5/10 mm 刻度時，請以 1 mm 刻度補足。</li>
+            <li>左鍵點選列表中的座標點：圖上以由右向左的箭頭標示該點。點選順序不限，列表會依高度（y）由上到下自動排序。</li>
             <li>左鍵選取座標點後，在該點上右鍵連點兩下即移除該點。</li>
-            <li>左右比例尺高低不必對齊；每個列表至少 2 點才能計算，超出點選範圍的高度為外插值，需複查。</li>
+            <li>左右比例尺高低不必對齊；左右各至少需 2 點才能計算，超出點選範圍的高度為外插值，需複查。</li>
             <li>此模型非必要，可直接略過，不影響後續分析。</li>
           </ul>
         </details>
@@ -150,7 +151,7 @@
       </template>
       <div class="actions" v-if="tab !== 'ratio'">
         <button class="primary" :disabled="!loadedReference || busy || !hasMask || maskEditing" @click="preview">預覽</button>
-        <button :disabled="!loadedReference || busy || !hasMask || maskEditing || variantChoice" @click="save"
+        <button :disabled="!loadedReference || busy || !hasMask || maskEditing || !!variantChoice" @click="save"
                 :title="variantChoice ? '已選條帶方案：請先在「(b) 計片條帶」切回「(預設)」才能儲存 project.json' : ''">儲存 project.json</button>
       </div>
       <div class="result" v-if="result" aria-live="polite">

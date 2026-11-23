@@ -163,9 +163,9 @@ Vue.createApp({
     },
     addRatioPoint(p) {
       const list = this.ratioPoints[this.ratioList.side][this.ratioList.kind];
-      const at = this.ratioSelected >= 0 ? this.ratioSelected + 1 : list.length;   // after the selected point
-      list.splice(at, 0, [Math.round(p.x), Math.round(p.y)]);
-      this.ratioSelected = at; this.draw();
+      const point = [Math.round(p.x), Math.round(p.y)];
+      list.push(point); list.sort((u, v) => u[1] - v[1]);                          // the list is always top to bottom
+      this.ratioSelected = list.indexOf(point); this.draw();
     },
     ratioRight(side, kind, i) {                       // right double click on the selected point removes it
       if (this.ratioList.side !== side || this.ratioList.kind !== kind || this.ratioSelected !== i) return;
@@ -180,7 +180,8 @@ Vue.createApp({
       try {
         const saved = await ESC.api(`/calibration/${encodeURIComponent(this.caseId)}/ratio`,
                                     { json: { angle_deg: this.ratioAngle, points: this.ratioPoints } });
-        this.message = `已寫入 ${saved.path}`; this.error = "";
+        const warnings = (saved.record.warnings || []).join("；");
+        this.message = `已寫入 ${saved.path}` + (warnings ? `（警告：${warnings}）` : ""); this.error = "";
       } catch (e) { this.error = e.message; } finally { this.busy = false; }
     },
     shiftAll(dx) { this.rois.forEach((r) => { r.x += dx; }); this.changed(); },

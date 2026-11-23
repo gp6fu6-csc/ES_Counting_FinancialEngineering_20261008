@@ -34,9 +34,50 @@ class HeightModelTests(unittest.TestCase):
         self.assertAlmostEqual(mm, 21.25)            # sum of the interpolated scale, not 20 / 300 * 300
         self.assertNotAlmostEqual(mm, 20.0)
 
-    def test_one_mm_list_is_five_mm_apart(self):
-        # the 1 mm clicks are the first icon after each 5 mm icon, so consecutive clicks are 5 mm apart
-        self.assertAlmostEqual(SideScale({"1": [[0, 10], [0, 60]]}).height(10, 60)[0], 5.0)
+    def test_one_mm_list_is_one_mm_apart(self):
+        self.assertAlmostEqual(SideScale({"1": [[0, 10], [0, 60]]}).height(10, 60)[0], 1.0)
+
+    def test_version_1_file_keeps_five_mm_for_one_mm_list(self):
+        self.assertAlmostEqual(SideScale({"1": [[0, 10], [0, 60]]}, version=1).height(10, 60)[0], 5.0)
+
+    def test_one_mm_points_set_the_scale_and_five_ten_mm_only_check(self):
+        one = [[0, y] for y in range(0, 101, 10)]            # 1 mm every 10 px
+        side = SideScale({"1": one, "5": [[0, 0], [0, 50]], "10": [[0, 0], [0, 100]]})
+        self.assertAlmostEqual(side.height(0, 100)[0], 10.0)
+        self.assertEqual(side.warnings, [])
+        off = SideScale({"1": one, "10": [[0, 0], [0, 80]]})   # 80 px = 8 mm on the 1 mm scale, not 10 mm
+        self.assertEqual(len(off.warnings), 1)
+
+    def test_without_one_mm_points_five_ten_mm_are_used_with_a_warning(self):
+        side = SideScale({"5": [[0, 0], [0, 50]]})
+        self.assertAlmostEqual(side.height(0, 50)[0], 5.0)
+        self.assertEqual(len(side.warnings), 1)
+
+    def test_clicks_in_any_order_give_the_same_scale(self):
+        ones = [[0, y] for y in range(0, 101, 10)]
+        shuffled = [ones[i] for i in (5, 0, 10, 3, 7, 1, 9, 2, 8, 4, 6)]
+        self.assertEqual(SideScale({"1": shuffled}).knots, SideScale({"1": ones}).knots)
+
+    def test_skipped_one_mm_icon_is_inferred_with_a_warning(self):
+        side = SideScale({"1": [[0, 0], [0, 10], [0, 30], [0, 40], [0, 50]]})   # the icon at 20 was not clicked
+        self.assertAlmostEqual(side.height(0, 50)[0], 5.0)
+        self.assertEqual(len(side.warnings), 1)
+
+    def test_five_ten_mm_points_extend_beyond_the_one_mm_rows(self):
+        # 1 mm rows 100..200 (10 px per mm); the 10 mm points 100 -> 400 reach 300 px below them (30 px per mm)
+        side = SideScale({"1": [[0, y] for y in range(100, 201, 10)], "10": [[0, 0], [0, 100], [0, 400]]})
+        self.assertAlmostEqual(side.height(250, 400)[0], 5.0)
+        self.assertFalse(side.height(0, 400)[1])
+
+    def test_knots_align_the_three_lists_by_height(self):
+        side = SideScale({"1": [[0, y] for y in range(0, 101, 10)], "5": [[0, 1], [0, 51], [0, 101]],
+                          "10": [[0, 100], [0, 0]]})
+        self.assertEqual([round(y) for y, _ in side.knots], list(range(0, 101, 10)))
+        self.assertAlmostEqual(side.knots[-1][1], 10.0)
+
+    def test_double_click_on_one_icon_is_ignored(self):
+        side = SideScale({"1": [[0, 0], [0, 1], [0, 10], [0, 20]]})
+        self.assertAlmostEqual(side.height(0, 20)[0], 2.0)
 
     def test_extrapolation_is_computed_and_flagged(self):
         mm, outside = SideScale(uniform(100)).height(-50, 100)
