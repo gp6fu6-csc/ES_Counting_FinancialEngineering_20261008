@@ -30,6 +30,7 @@ from escount.height import load_model as load_height_model
 from escount.indicators.counters import IndicatorConfig, count
 from escount.inference.benchmark import ProjectRuntime
 from escount.inference.plots import save_analysis
+from escount.signals.edges import consensus_edges, stack_edges
 from escount.signals.projection import project
 from escount.signals.roi_bank import build_roi_bank
 
@@ -211,16 +212,20 @@ class InferenceEngine:
         return engine
 
     def sheet_edges(self, rotated, slot, projection):
-        """Rows of the first sheet from the top and the first sheet from the bottom inside one ROI (PDF 20261118 p22).
+        """Upper edge of the first sheet and lower edge of the last sheet inside one ROI (PDF 20261118 p22,
+        20261124 p24-25).
 
-        The ROI's full strip (not the image-level stack clip) is searched: es_counting.stack_extent on this strip
-        alone gives the textured run of the stack, and the first / last sheet peak (the counting marks) inside
-        that run are the edges. Peaks in the empty area above or below the stack are ignored.
+        The ROI's full strip is searched with signals.edges.stack_edges (regular sheet-peak chain, split at dark
+        gaps, weak end peaks = reflections / support base trimmed, then walked out to the sheet edge). If no sheet
+        chain is found, the old rule is used: first / last counting mark inside es_counting.stack_extent.
         """
         items = list(getattr(self.runtime, "items", None) or []) + list(getattr(self.runtime, "all_items", None) or [])
         full = next((s for s, p in items if (s.x, s.w, p) == (slot.x, slot.w, projection)), slot)
-        run = stack_extent(rotated, {"strips": [{"x": full.x, "width": full.w, "y0": full.y0, "y1": full.y1}]})
         signal = project(rotated, full, projection, projection_sigma(projection, full.w, self.runtime.grid.gaussian_sigma_ratio))
+        edges = stack_edges(signal)          # PDF 20261124 p24-25: sheet edges, not the brightest row / the base
+        if edges:
+            return full.y0 + edges[0], full.y0 + edges[1]
+        run = stack_extent(rotated, {"strips": [{"x": full.x, "width": full.w, "y0": full.y0, "y1": full.y1}]})
         _, highs, _ = count(signal, self.marks) if signal.size >= 2 else (0, [], [])
         rows = [full.y0 + int(i) for i in highs if run["y0"] <= full.y0 + i < run["y1"]]
         return (rows[0], rows[-1]) if len(rows) >= 2 else (run["y0"], run["y1"])
@@ -297,15 +302,16 @@ class InferenceEngine:
         order = {f"{method}|{slot.w}|{slot.x}": index for index, (slot, method) in enumerate(run["kept"])}
         rank = np.argsort([order[key] for key in rows["slot_key"]], kind="stable") if len(rows) else []
         items = {f"{method}|{slot.w}|{slot.x}": (slot, method) for slot, method in run["kept"]}
+        picked = [items[rows.iloc[position]["slot_key"]] for position in rank]
+        edges = consensus_edges([self.sheet_edges(run["rotated"], slot, method) for slot, method in picked])
         rois = []
-        for number, position in enumerate(rank, start=1):
+        for number, (position, edge, (slot, method)) in enumerate(zip(rank, edges, picked), start=1):
             row = rows.iloc[position]
-            slot, method = items[row["slot_key"]]
             rois.append({"index": number, "key": row["slot_key"], "projection": method, "w": int(slot.w),
                          "x": int(slot.x), "y0": int(slot.y0), "y1": int(slot.y1),
                          "sigma": None if pd.isna(row["sigma"]) else float(row["sigma"]),
                          "period_count": int(row["period_count"]), "prediction": float(per_roi[position]),
-                         **self.edge_fields(*self.sheet_edges(run["rotated"], slot, method)), "slot": slot})
+                         **self.edge_fields(*edge), "slot": slot})
         image_name = path.name if path else (name or "image")
         stack = ({"stack_y_top": int(np.median([roi["y_top"] for roi in rois])),        # median over the ROIs
                   "stack_y_bottom": int(np.median([roi["y_bottom"] for roi in rois]))} if rois else {})
