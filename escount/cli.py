@@ -65,7 +65,7 @@ def _apply_variant(args):
     from escount.variants import split_case, sync_variant, variant_case
 
     project, variant = getattr(args, "project", None), getattr(args, "variant", None)
-    if args.command in ("calibrate", "copy-params", "batch", "variant", "evaluate") or not hasattr(args, "profiles_root"):
+    if args.command in ("calibrate", "copy-params", "batch", "variant", "evaluate", "purge") or not hasattr(args, "profiles_root"):
         return
     if variant and not project:
         raise SystemExit(f"escount {args.command}: --variant needs --project <case>")
@@ -399,6 +399,25 @@ def cmd_adopt(args):
     return 0
 
 
+def cmd_purge(args):
+    from escount.purge import purge_case
+    from escount.variants import variant_case
+
+    case = variant_case(args.project, args.variant) if args.variant else args.project
+    try:
+        items = purge_case(case, dry_run=not args.yes, profiles_root=args.profiles_root, cache_root=args.cache_root,
+                           results_root=args.results_root, research_root=args.research_root,
+                           candidates_root=args.candidates_root, storage=args.storage,
+                           with_variants=args.with_variants, research=args.research, all_files=args.all)
+    except ValueError as error:
+        raise SystemExit(f"escount purge: {error}") from error
+    for item in items:
+        print(f"{item['kind']:<10} {item['bytes'] / 1e6:10.1f} MB  {item['path']}")
+    total = sum(item["bytes"] for item in items) / 1e6
+    print(f"{'deleted' if args.yes else 'would delete (dry run, add --yes)'}: {len(items)} item(s), {total:.1f} MB")
+    return 0
+
+
 def cmd_serve(args):
     from escount.server.app import ServerConfig, check_bind, create_app
 
@@ -624,6 +643,9 @@ def build_parser():
     runs.add_argument("--workers", type=int, default=None, help="feature worker processes (default: os.cpu_count())")
     runs.add_argument("--trials", type=int, default=0, help="AutoResearch (Optuna) trials per project before training; 0 = skip (default)")
     runs.add_argument("--track", choices=TRACKS, default="default", help="AutoResearch track (with --trials)")
+    runs.add_argument("--report", action="store_true", help="after all trainings: analyse each project with its own model, run escount report "
+                                                                "for the chosen track and write variants_summary.csv")
+    runs.add_argument("--report-out", default="outputs/research_report", help="report root (default: outputs/research_report; other tracks add _<track>)")
     runs.add_argument("--no-infer", action="store_true", help="skip step infer (analyse every image into --results-root)")
     runs.add_argument("--note", default="", help="free text stored in run.json")
     runs.add_argument("--data-root", default="Data", help="root folder of case ids (default: Data)")
@@ -631,6 +653,21 @@ def build_parser():
     runs.add_argument("--results-root", default="outputs/infer", help="infer outputs <case>~<run>/ (default: outputs/infer)")
     _research_paths(runs)
     runs.set_defaults(func=cmd_run_variants)
+
+    purge = sub.add_parser("purge", help="delete the models / features / results generated for one data set "
+                                         "(dry run unless --yes; keeps calibration unless --all)")
+    purge.add_argument("--project", required=True, help="case id (Data folder name, or <case>@<variant>)")
+    purge.add_argument("--variant", help="only this ROI-strip variant of the project")
+    purge.add_argument("--with-variants", action="store_true", help="also delete every variant of the project")
+    purge.add_argument("--research", action="store_true",
+                       help="also delete AutoResearch records (research/, candidates/, Optuna studies)")
+    purge.add_argument("--all", action="store_true", help="also delete the calibration (project.json, backups, "
+                                                          "background_BW*.png, height_model.json)")
+    purge.add_argument("--yes", action="store_true", help="really delete (default: only list)")
+    purge.add_argument("--cache-root", default="outputs/features", help="feature cache (default: outputs/features)")
+    purge.add_argument("--results-root", default="outputs/infer", help="infer outputs (default: outputs/infer)")
+    _research_paths(purge)
+    purge.set_defaults(func=cmd_purge)
 
     serve = sub.add_parser("serve", help="FastAPI inference server + web UI (default 127.0.0.1:8000)")
     serve.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1; others need --api-key)")

@@ -103,7 +103,7 @@ class VariantApiTests(unittest.TestCase):
         with mock.patch("subprocess.Popen", fake):
             response = self.client.post("/training/batch", json={
                 "cases": ["SynA"], "variants": ["bat1"], "device": "cpu", "max_rois": 9, "max_rows_per_image": 300,
-                "trials": 4, "track": "mae", "infer": False, "note": "from ui"})
+                "research": True, "trials": 4, "track": "mae", "infer": False, "note": "from ui"})
             self.assertEqual(response.status_code, 200, response.text)
             job = self.wait_done()
         self.assertEqual((job["case"], job["step"], job["status"]), ("batch", "batch", "done"))
@@ -115,6 +115,27 @@ class VariantApiTests(unittest.TestCase):
                             ("--results-root", str(self.results))):
             self.assertEqual(command[command.index(flag) + 1], value, flag)
         self.assertIn("--no-infer", command)
+        self.assertIn("--report", command)
+
+    def test_research_checkbox_maps_to_trials_and_report(self):
+        sync_variant("SynA@chk1", self.profiles, strips=STRIPS)
+        base = {"cases": ["SynA"], "variants": ["chk1"], "device": "cpu", "trials": 7, "track": "exact"}
+        for research in (True, False):
+            fake = FakeProcess()
+            with mock.patch("subprocess.Popen", fake):
+                response = self.client.post("/training/batch", json={**base, "research": research})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.wait_done()
+            command = fake.command[3:]
+            self.assertEqual(command[command.index("--trials") + 1], "7" if research else "0")
+            self.assertEqual("--report" in command, research)
+        # the default request (no checkbox field) stays a plain training
+        fake = FakeProcess()
+        with mock.patch("subprocess.Popen", fake):
+            self.client.post("/training/batch", json={**base})
+            self.wait_done()
+        self.assertNotIn("--report", fake.command[3:])
+        self.assertEqual(self.client.post("/training/batch", json={**base, "research": True, "trials": 0}).status_code, 422)
 
     def test_batch_training_validates_its_input(self):
         base = {"cases": ["SynA"], "variants": ["bat2"]}

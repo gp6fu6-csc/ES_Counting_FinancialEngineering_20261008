@@ -40,6 +40,12 @@
           <option value="cpu">CPU</option>
         </select>
       </label>
+      <div class="field"><span>刪除此資料集產生的資料（模型、特徵、分析結果）</span>
+        <label v-if="!variantId"><input type="checkbox" v-model="purgeOpts.with_variants"> 連同所有條帶方案</label>
+        <label><input type="checkbox" v-model="purgeOpts.research"> 含 AutoResearch 紀錄</label>
+        <label><input type="checkbox" v-model="purgeOpts.all_files"> 含校正（project.json、比例模型）</label>
+        <button @click="purge" :disabled="!caseId || job.status === 'running'">刪除資料</button>
+      </div>
       <p class="hint">依序完成 0 → 4。每一步完成後，下一步的按鈕才會啟用。同一時間只能執行一個工作。</p>
       <p class="hint">下方「ROI 方案批次訓練」可一次訓練多個資料夾 × 多個條帶方案，並保留每次訓練的設定與結果。</p>
     </aside>
@@ -66,10 +72,12 @@
             <input type="number" min="10" max="100000" v-model.number="batch.max_rows_per_image"></label>
         </div>
         <div>
-          <label class="field"><span>AutoResearch trials（0 = 不執行）</span>
-            <input type="number" min="0" max="500" v-model.number="batch.trials"></label>
-          <label class="field"><span>AutoResearch 軌道</span>
-            <select v-model="batch.track" :disabled="!batch.trials">
+          <label class="check"><input type="checkbox" v-model="batch.research"> 執行 AutoResearch 並輸出研究報告</label>
+          <p class="hint" v-if="!batch.research">不勾選：只訓練各組，不做研究也不產生報告。</p>
+          <label class="field" v-if="batch.research"><span>AutoResearch trials（建議先 3–5 次試跑）</span>
+            <input type="number" min="1" max="500" v-model.number="batch.trials"></label>
+          <label class="field" v-if="batch.research"><span>AutoResearch 軌道</span>
+            <select v-model="batch.track">
               <option value="default">default（完全命中率）</option>
               <option value="mae">mae（最小平均誤差）</option>
               <option value="exact">exact（Soft-loss + 分類器）</option>
@@ -98,6 +106,8 @@
           <dd>最少 ROI 貪婪挑選的組數上限（預設 25，通常只會選出 2–8 組）。</dd>
           <dt>每張影像訓練取樣列數（--max-rows-per-image）</dt>
           <dd>每張影像最多取多少列 ROI 特徵訓練模型（預設 1000）。調高訓練較慢但資料較完整。</dd>
+          <dt>執行 AutoResearch 並輸出研究報告（--trials N --report）</dt>
+          <dd>勾選後：每個資料夾先做一次 AutoResearch → 依序訓練全部組別 → 最後產生研究報告與方案比較表 variants_summary.csv（見下方輸出位置）。不勾選：只訓練，不做研究也不產生報告。研究或報告失敗不會中斷訓練，會記在日誌與 run.json。</dd>
           <dt>AutoResearch trials（--trials）</dt>
           <dd>Optuna TPE 超參數搜尋的次數。每個 trial 為一組候選設定：條帶寬度 w、間距 D、使用的財務指標、模型種類與參數、聚合方式、ROI 上限；以「留一影像（LOIO）完全命中率」評分，命中率最高者寫入 best_params.json。0 代表略過。同一資料夾只搜尋一次（它自行搜尋 w、D，與條帶方案無關），同一個 Optuna 資料庫可重複執行並累加 trials（可續跑）。建議先用 3–5 次試跑，再依耗時調高。</dd>
           <dt>AutoResearch 軌道（--track）</dt>
@@ -112,6 +122,7 @@
             每次訓練的紀錄與模型備份：outputs/projects/&lt;資料夾&gt;@&lt;方案&gt;/runs/&lt;時間&gt;/（run.json、model/）<br>
             特徵快取：outputs/features/&lt;資料夾&gt;@&lt;方案&gt;/<br>
             分析結果：outputs/infer/&lt;資料夾&gt;@&lt;方案&gt;~&lt;時間&gt;/<br>
+            研究報告（勾選 AutoResearch 時）：outputs/research_report/latest/report.html（其他軌道加 _軌道名稱）；方案比較表：outputs/research_report/variants_summary.csv<br>
             AutoResearch：candidates/&lt;資料夾&gt;/best_params.json、research/（結果頁「條帶方案 / 訓練紀錄」可切換檢視）
           </dd>
         </dl>

@@ -154,6 +154,8 @@ uv run escount serve       # 網頁：校正頁存方案 → 訓練頁批次訓�
 | `--max-rows-per-image` | 每張影像訓練取樣列數（預設 1000）。 |
 | `--trials` | AutoResearch (Optuna TPE) 試驗次數，**每個資料夾只跑一次**，0 = 不執行（預設）。每個 trial = 一組候選的 w、D、財務指標、模型種類/超參數、聚合方式、ROI 上限，以留一影像 (LOIO) 完全命中率評分；最佳者寫入 `candidates/<資料夾>/best_params.json`，資料庫 `research/study.db` 可續跑並累加。搜尋結果只記錄在 run.json，不會自動取代推論模型。 |
 | `--track` | AutoResearch 軌道：`default`（完全命中率）、`mae`、`exact`、`ensemble`。 |
+| `--report` | 全部訓練完成後輸出研究報告：先對各資料夾本身的模型做一次 infer（報告的預測圖需要，會覆蓋 `outputs/infer/<資料夾>/`；資料夾本身沒有模型時略過），再執行 `escount report`（自動帶入所選軌道的研究目錄與資料庫），並寫出方案比較表 `variants_summary.csv`。AutoResearch 或報告失敗不會中斷訓練，只讓結束代碼變成 3。網頁勾選「執行 AutoResearch 並輸出研究報告」等同 `--trials N --report`；不勾選則只訓練。 |
+| `--report-out` | 報告根目錄，預設 `outputs/research_report`（其他軌道自動加 `_mae` / `_exact_hit` / `_ensemble`）。 |
 | `--no-infer` | 略過「分析全部影像」。 |
 | `--note` | 備註，存入 run.json。 |
 | `--workers` | 特徵計算的行程數。 |
@@ -170,6 +172,8 @@ uv run escount serve       # 網頁：校正頁存方案 → 訓練頁批次訓�
 | 特徵快取 | `outputs/features/<資料夾>@<方案>/` |
 | 該次訓練的全影像分析 | `outputs/infer/<資料夾>@<方案>~<時間>/` |
 | AutoResearch 最佳參數 | `candidates/<資料夾>/best_params.json`（其他軌道在 `candidates/<軌道>/`） |
+| 研究報告（`--report`） | `outputs/research_report/latest/report.html`（依資料夾比較） |
+| **方案比較表**（`--report`） | `outputs/research_report/variants_summary.csv`：每個資料夾 × 方案 × 每次訓練一列，欄位含條帶（n、w、pitch、距邊、位移）、訓練選項、模型種類、最少 ROI 與全部 ROI 的 ROI 數 / 命中數 / MAE、AutoResearch 軌道 / trials / 最佳 trial 的命中率、w、D、模型。以 UTF-8 BOM 儲存，Excel 可直接開啟。 |
 
 `run.json` 內容：時間、狀態、備註、條帶參數、校正摘要（角度、參考影像）、訓練選項（device / max_rois / max_rows_per_image / workers / infer）、各步驟耗時與成敗、AutoResearch 設定與最佳參數、模型摘要（最少 ROI 與全部 ROI 的完全命中率與 MAE）、分析結果資料夾。
 
@@ -206,6 +210,12 @@ cd F:\Antigravity_2_0\20261102_ESCountingFinace; mkdir logs -Force | Out-Null; p
 | 完成 | 寫入完成時間 | `logs\done.txt` |
 
 總時間 = 階段 1 的 24 小時 + 階段 2 的訓練時間（取決於資料量與 GPU，需自行實測）。要放更久可調大 `--hours`。啟動後建議先看 `logs\*.log` 前幾行確認沒有報錯。
+
+### 網頁版對應（訓練頁）
+勾選「執行 AutoResearch 並輸出研究報告」，填 trials 與軌道後按「開始批次訓練」，等同 CLI：
+```powershell
+uv run escount run-variants --projects <資料夾...> --variants <方案...> --trials 30 --track default --report
+```n不勾選時只訓練各組，不做研究也不產生報告。報告與方案比較表位置見 2.5 章。
 
 ### 為什麼用 `--hours`，不是上千次 trials
 * 每個 **trial** 是一組候選設定：條帶寬度 w、間距 D、財務指標、模型種類與參數、聚合方式、ROI 上限。Optuna 的 TPE 會依前面 trial 的成績挑下一組，前幾十次主要在學習搜尋空間。
@@ -624,3 +634,14 @@ uv run escount infer --project press-Red-max --input Data/press-Red-max --output
 ```
 注意 `escount calibrate` 會重寫 `project.json` 並清空 `strip_params`；要保留條帶請用 `copy-params` 或網頁校正頁「儲存」。run python scripts/check_licenses.py
 ```
+
+
+## 刪除某資料集產生的資料（purge）
+
+```powershell
+uv run escount purge --project press-Red-70                  # 只列出，不刪除
+uv run escount purge --project press-Red-70 --yes           # 刪模型、特徵快取、分析結果、訓練紀錄（保留校正）
+uv run escount purge --project press-Red-70 --variant n6_w30 --yes   # 只刪一個條帶方案
+```
+* `--with-variants` 連同所有條帶方案；`--research` 連同 `research/`、`candidates/` 與 Optuna study；`--all` 連校正（`project.json`、備份、`background_BW*.png`、`height_model.json`）一起刪。
+* 不會動 `Data/`、`outputs/summary.*`、`research_report/`。網頁訓練頁左側「刪除資料」按鈕、`POST /training/<資料夾>/purge` 做同樣的事（先預覽清單再確認）。

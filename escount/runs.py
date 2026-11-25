@@ -14,7 +14,7 @@ from pathlib import Path
 
 from escount.variants import (
     VARIANT_SEP, check_name, list_runs, new_run_id, normalize_strips, snapshot_run, split_case, summarize_manifest,
-    sync_variant, variant_case, variant_names, variant_strips,
+    sync_variant, variant_case, variant_names, variant_strips, write_variants_summary,
 )
 
 TRACK_DIRS = {"default": "", "mae": "mae", "exact": "exact_hit", "ensemble": "ensemble"}   # candidates/<dir>/<case>
@@ -102,6 +102,48 @@ def _research_once(base, args, runner):
             "research_root": args.research_root, "candidates_root": args.candidates_root,
             "status": "ok" if code == 0 else "failed", "seconds": round(seconds, 1),
             "best_params_path": str(best_path), "best_params": best}
+
+
+def _report_paths(args):
+    """research_root / candidates_root / storage / study suffix of the chosen track (as written by `escount research`)."""
+    folder = TRACK_DIRS[args.track]
+    if not folder:
+        return args.research_root, args.candidates_root, args.storage, ""
+    return f"research/{folder}", f"candidates/{folder}", f"sqlite:///research/study_{folder}.db", f"_{folder}"
+
+
+def _build_report(bases, args, runner):
+    """After all trainings: analyse each base project with its own model (the report's prediction figure reads
+    <results-root>/<project>/predictions.csv), run `escount report` and write variants_summary.csv.
+    Returns the list of failed parts (empty = everything worked)."""
+    failed = []
+    for base in bases:
+        if (Path(args.profiles_root) / base / "model" / "manifest.json").is_file():
+            code, _ = _run_step(runner, ["infer", "--project", base, "--input", str(Path(args.data_root) / base),
+                                         "--output", str(Path(args.results_root) / base),
+                                         "--profiles-root", args.profiles_root, "--config", args.config])
+            if code != 0:
+                failed.append(f"infer {base}")
+        else:
+            print(f"[report] {base} has no base-project model: its prediction figure stays empty "
+                  f"(the variants' own results are in {args.results_root}/{base}@<variant>~<run>)")
+    research_root, candidates_root, storage, suffix = _report_paths(args)
+    out = args.report_out + (suffix if suffix else "")
+    code, _ = _run_step(runner, ["report", "--cases", *bases, "--out", out, "--results-root", args.results_root,
+                                 "--research-root", research_root, "--candidates-root", candidates_root,
+                                 "--storage", storage, "--study-suffix", suffix,
+                                 "--profiles-root", args.profiles_root, "--config", args.config])
+    if code != 0:
+        failed.append("report")
+    try:
+        rows = write_variants_summary(Path(out) / "variants_summary.csv", bases, args.profiles_root)
+        print(f"[report] variants_summary.csv: {rows} run(s) -> {(Path(out) / 'variants_summary.csv').resolve()}")
+    except Exception:
+        traceback.print_exc()
+        failed.append("variants_summary")
+    print(f"[report] report directory: {Path(out).resolve()}"
+          + (f"; FAILED parts: {failed}" if failed else ""))
+    return failed
 
 
 def _resolve_strips(base, variant, args):
@@ -192,7 +234,12 @@ def run_variants(args, runner):
     print("\nrun-variants summary:")
     for case, run, status in summary:
         print(f"  {case}~{run}: {status}")
-    return 0 if all(status == "ok" for _, _, status in summary) else 3
+    problems = [f"research {base}" for base, item in research_by_base.items() if item.get("status") == "failed"]
+    if args.report:
+        problems += _build_report(bases, args, runner)
+    if problems:
+        print(f"run-variants: parts that failed (training of the other pairs was not affected): {problems}")
+    return 0 if all(status == "ok" for _, _, status in summary) and not problems else 3
 
 
 def cmd_run_variants(args):

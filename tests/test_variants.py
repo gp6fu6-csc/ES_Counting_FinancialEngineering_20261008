@@ -1,5 +1,6 @@
 """ROI-strip variants: case ids, shared calibration, own strips / models / runs, CLI plumbing, run-variants."""
 import argparse
+import csv
 import json
 import tempfile
 import unittest
@@ -133,6 +134,7 @@ class RunVariantsTests(unittest.TestCase):
         cls.data, cls.profiles, cls.features, cls.config = build(cls.root)
         sync_variant("SynA@one", cls.profiles, strips=STRIPS_A)
         cls.calls = []
+        cls.fail_step = None
 
     @classmethod
     def tearDownClass(cls):
@@ -142,7 +144,11 @@ class RunVariantsTests(unittest.TestCase):
         """Stands in for escount.cli.main: the same library calls, with the test grid."""
         self.calls.append(argv)
         step = argv[0]
-        flag = "--cases" if step == "research" else "--project"
+        flag = "--cases" if step in ("research", "report") else "--project"
+        if self.fail_step == step:
+            return 5
+        if step == "report":
+            return 0
         case = argv[argv.index(flag) + 1]
         if step == "prepare":
             prepare(case, self.data, self.profiles, self.features, workers=1, grid=GRID)
@@ -166,7 +172,8 @@ class RunVariantsTests(unittest.TestCase):
                       trials=0, track="default", no_infer=False, note="first try", data_root=str(self.data),
                       cache_root=str(self.features), results_root=str(self.root / "infer"),
                       profiles_root=str(self.profiles), config=str(self.config), storage="sqlite:///x.db",
-                      research_root=str(self.root / "research"), candidates_root=str(self.root / "candidates"))
+                      research_root=str(self.root / "research"), candidates_root=str(self.root / "candidates"),
+                      report=False, report_out=str(self.root / "report"))
         values.update(overrides)
         return argparse.Namespace(**values)
 
@@ -209,6 +216,57 @@ class RunVariantsTests(unittest.TestCase):
         record = read_run("SynA@one", newest["run"], self.profiles)
         self.assertEqual((record["status"], record["steps"][-1]["step"]), ("failed", "train"))
         self.assertFalse(newest["has_model"])
+
+    def test_report_runs_after_all_trainings_with_the_track_paths_and_writes_the_variant_table(self):
+        self.calls.clear()
+        out = self.root / "rep_mae"
+        sync_variant("SynA@rep", self.profiles, strips=STRIPS_A)
+        code = run_variants(self.args(report=True, report_out=str(out), trials=2, track="mae", variants=["rep"]),
+                            self.runner)
+        self.assertEqual(code, 0)
+        steps = [c[0] for c in self.calls]
+        self.assertEqual(steps[0], "research")
+        self.assertEqual(steps[-2:], ["infer", "report"])                       # the report is the very last step
+        self.assertEqual(steps.count("report"), 1)
+        base_infer = self.calls[-2]                                              # base project analysed for the figure
+        self.assertEqual(base_infer[base_infer.index("--project") + 1], "SynA")
+        report = self.calls[-1]
+        self.assertEqual(report[report.index("--cases") + 1], "SynA")
+        self.assertEqual(report[report.index("--out") + 1], str(out) + "_mae")
+        self.assertEqual(report[report.index("--research-root") + 1], "research/mae")
+        self.assertEqual(report[report.index("--candidates-root") + 1], "candidates/mae")
+        self.assertEqual(report[report.index("--storage") + 1], "sqlite:///research/study_mae.db")
+        self.assertEqual(report[report.index("--study-suffix") + 1], "_mae")
+        with (Path(str(out) + "_mae") / "variants_summary.csv").open(encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertTrue(rows)
+        newest = rows[-1]
+        self.assertEqual((newest["project"], newest["variant"], newest["status"]), ("SynA", "rep", "ok"))
+        self.assertEqual((newest["n"], newest["w"], newest["max_rois"], newest["max_rows_per_image"]),
+                         (str(STRIPS_A["n"]), str(STRIPS_A["w"]), "7", "200"))
+        self.assertEqual((newest["research_track"], newest["research_trials"]), ("mae", "2"))
+        self.assertNotEqual(newest["all_hits"], "")
+        self.assertEqual(newest["note"], "first try")
+
+    def test_without_report_no_report_or_base_analysis_runs(self):
+        self.calls.clear()
+        self.assertEqual(run_variants(self.args(no_infer=True), self.runner), 0)
+        self.assertNotIn("report", [c[0] for c in self.calls])
+        self.assertNotIn("research", [c[0] for c in self.calls])                 # trials 0: plain training only
+
+    def test_failed_research_or_report_never_stops_the_training_but_fails_the_exit_code(self):
+        for failing in ("research", "report"):
+            self.calls.clear()
+            type(self).fail_step = failing
+            try:
+                code = run_variants(self.args(report=True, trials=1, variants=["one"], no_infer=True), self.runner)
+            finally:
+                type(self).fail_step = None
+            steps = [c[0] for c in self.calls]
+            self.assertEqual(code, 3, failing)
+            self.assertEqual(steps.count("all-rois"), 1, f"training still ran when {failing} failed")
+            newest = list_runs("SynA@one", self.profiles)[0]
+            self.assertEqual(newest["status"], "ok")
 
     def test_missing_variant_is_an_error_and_other_projects_borrow_strips(self):
         with self.assertRaises(SystemExit):

@@ -15,6 +15,7 @@ Folder layout (profiles_root = outputs/projects):
     <base>@<variant>/project.json, background_BW_rotated.png, model/     the latest training
     <base>@<variant>/runs/<run>/run.json, model/                         every `run-variants` training kept
 """
+import csv
 import re
 import shutil
 from datetime import datetime
@@ -190,6 +191,67 @@ def snapshot_run(case, run, record, profiles_root="outputs/projects"):
         shutil.copytree(model, folder / "model", dirs_exist_ok=True)
     write_json(folder / RUN_FILE, {"schema_version": RUN_SCHEMA_VERSION, **record})
     return folder
+
+
+SUMMARY_COLUMNS = (
+    "project", "variant", "run", "created", "status", "note",
+    "n", "w", "pitch", "side_margin", "x_offset",
+    "device", "max_rois", "max_rows_per_image",
+    "model_type", "method", "images",
+    "minimal_rois", "minimal_hits", "minimal_total",
+    "all_rois", "all_recommended", "all_hits", "all_total", "all_mae",
+    "research_track", "research_trials", "research_status", "research_best_trial", "research_best_hit_rate",
+    "research_best_w", "research_best_D", "research_best_model",
+)
+
+
+def summary_rows(projects, profiles_root="outputs/projects"):
+    """One row per saved training run of every variant of `projects` (oldest first), for side-by-side comparison."""
+    rows = []
+    for base in projects:
+        for name in variant_names(base, profiles_root):
+            case = variant_case(base, name)
+            for item in sorted(list_runs(case, profiles_root), key=lambda x: x["run"]):
+                record = read_run(case, item["run"], profiles_root)
+                strips, options = record.get("strip_params") or {}, record.get("options") or {}
+                model = record.get("model") or {}
+                minimal, everything = model.get("minimal") or {}, model.get("all_rois") or {}
+                research = record.get("research") or {}
+                best = research.get("best_params") or {}
+                rows.append({
+                    "project": base, "variant": name, "run": item["run"], "created": record.get("created"),
+                    "status": record.get("status"), "note": record.get("note"),
+                    "n": strips.get("n"), "w": strips.get("w"), "pitch": strips.get("pitch"),
+                    "side_margin": strips.get("side_margin"), "x_offset": strips.get("x_offset"),
+                    "device": options.get("device"), "max_rois": options.get("max_rois"),
+                    "max_rows_per_image": options.get("max_rows_per_image"),
+                    "model_type": model.get("model_type"), "method": model.get("method"), "images": model.get("images"),
+                    "minimal_rois": minimal.get("roi_count"), "minimal_hits": minimal.get("hits"),
+                    "minimal_total": minimal.get("total"),
+                    "all_rois": everything.get("roi_count"), "all_recommended": everything.get("recommended"),
+                    "all_hits": everything.get("hits"), "all_total": everything.get("total"),
+                    "all_mae": everything.get("mae"),
+                    "research_track": research.get("track") if research.get("trials") else None,
+                    "research_trials": research.get("trials"), "research_status": research.get("status"),
+                    "research_best_trial": best.get("trial"),
+                    "research_best_hit_rate": (best.get("result") or {}).get("hit_rate"),
+                    "research_best_w": (best.get("geometry") or {}).get("w"),
+                    "research_best_D": (best.get("geometry") or {}).get("D"),
+                    "research_best_model": (best.get("model") or {}).get("kind"),
+                })
+    return rows
+
+
+def write_variants_summary(path, projects, profiles_root="outputs/projects"):
+    """variants_summary.csv (UTF-8 with BOM so Excel shows the Chinese notes). Returns the row count."""
+    rows = summary_rows(projects, profiles_root)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=SUMMARY_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    return len(rows)
 
 
 def list_runs(case, profiles_root="outputs/projects"):

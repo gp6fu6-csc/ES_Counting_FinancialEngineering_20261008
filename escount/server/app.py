@@ -82,6 +82,9 @@ class ServerConfig:
     results_root: str = "outputs/infer"   # `escount infer` outputs (<case>/<image stem>/...) for the results page
     output_root: str = "outputs"          # /infer/path "output" folders must lie inside this folder
     features_root: str = "outputs/features"  # `escount prepare` cache (training page step status)
+    research_root: str = "research"          # AutoResearch records, only touched by the purge button's research option
+    candidates_root: str = "candidates"
+    storage: Optional[str] = None            # Optuna storage (None = escount.research.daemon.DEFAULT_STORAGE)
 
 
 def check_bind(host, api_key):
@@ -933,6 +936,7 @@ def create_app(config=ServerConfig()):
         device: Literal["cuda", "cpu"] = "cuda"
         max_rois: int = Field(25, ge=1, le=200)
         max_rows_per_image: int = Field(1000, ge=10, le=100000)
+        research: bool = False            # AutoResearch + report (checkbox); False = plain training only
         trials: int = Field(0, ge=0, le=500)
         track: Literal["default", "mae", "exact", "ensemble"] = "default"
         infer: bool = True
@@ -941,6 +945,8 @@ def create_app(config=ServerConfig()):
     @app.post("/training/batch")
     def training_batch(body: BatchRequest):
         """Train every selected project x ROI-strip variant one after the other (`escount run-variants`)."""
+        if body.research and body.trials < 1:
+            raise HTTPException(422, "勾選 AutoResearch 時 trials 必須 >= 1")
         for case in body.cases:
             state.case_dir(case)
             if VARIANT_SEP in case or not (state.profiles_root / case / PROFILE_NAME).is_file():
@@ -954,16 +960,44 @@ def create_app(config=ServerConfig()):
                 raise HTTPException(409, f"方案 {name!r} 不存在：請先在校正頁「計片條帶」另存方案")
         args = ["run-variants", "--projects", *body.cases, "--variants", *body.variants, "--device", body.device,
                 "--max-rois", str(body.max_rois), "--max-rows-per-image", str(body.max_rows_per_image),
-                "--trials", str(body.trials), "--track", body.track, "--note", body.note,
+                "--trials", str(body.trials if body.research else 0), "--track", body.track, "--note", body.note,
                 "--data-root", str(state.data_root), "--profiles-root", str(state.profiles_root),
                 "--cache-root", str(config.features_root), "--results-root", str(config.results_root)]
         if not body.infer:
             args.append("--no-infer")
+        if body.research:
+            args.append("--report")
         with job_lock:
             if job["status"] == "running":
                 raise HTTPException(409, f"已有工作執行中：{job['case']} / {job['step']}")
             job.update(case="batch", step="batch", status="running", log=[], returncode=None)
         threading.Thread(target=run_job, args=("batch", "batch", args), daemon=True).start()
         return {"started": "batch", "pairs": len(body.cases) * len(body.variants)}
+    class PurgeRequest(BaseModel):
+        dry_run: bool = True
+        with_variants: bool = False
+        research: bool = False
+        all_files: bool = False
+
+    @app.post("/training/{case}/purge")
+    def training_purge(case: str, body: PurgeRequest):
+        """Delete the models / features / results generated for `case` (same as `escount purge`); dry_run only lists."""
+        from escount.purge import purge_case
+
+        state.case_dir(case, need_mask=False)
+        with job_lock:
+            if job["status"] == "running":
+                raise HTTPException(409, f"已有工作執行中：{job['case']} / {job['step']}")
+            items = purge_case(case, dry_run=body.dry_run, profiles_root=state.profiles_root,
+                               cache_root=config.features_root, results_root=config.results_root,
+                               research_root=config.research_root, candidates_root=config.candidates_root,
+                               storage=config.storage, with_variants=body.with_variants, research=body.research,
+                               all_files=body.all_files)
+        if not body.dry_run:
+            state.unload(case)
+            job.update(case=None, step=None, status="idle", log=[], returncode=None)
+        return {"case": case, "dry_run": body.dry_run, "items": items,
+                "bytes": sum(item["bytes"] for item in items)}
+
     app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
     return app

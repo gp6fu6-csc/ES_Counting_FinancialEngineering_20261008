@@ -14,8 +14,9 @@ Vue.createApp({
   data() {
     return { apiKey: ESC.apiKey(), cases: [], caseId: "", device: "cuda", steps: STEPS,
              status: {}, job: { log: [] }, error: "", timer: null,
+             purgeOpts: { with_variants: false, research: false, all_files: false },
              variantId: "", overview: { projects: {}, variants: [] },
-             batch: { cases: [], variants: [], max_rois: 25, max_rows_per_image: 1000, trials: 0, track: "default",
+             batch: { cases: [], variants: [], max_rois: 25, max_rows_per_image: 1000, research: false, trials: 30, track: "default",
                       infer: true, note: "" } };
   },
   computed: {
@@ -68,6 +69,22 @@ Vue.createApp({
         clearTimeout(this.timer);
         if (info.job.status === "running") this.timer = setTimeout(() => this.refresh(), 1500);
         else await this.loadOverview();                       // a finished batch may have created variant folders
+      } catch (e) { this.error = e.message; }
+    },
+    async purge() {
+      const url = `/training/${encodeURIComponent(this.fullCase)}/purge`;
+      const opts = { ...this.purgeOpts, with_variants: !this.variantId && this.purgeOpts.with_variants };
+      try {
+        const plan = await ESC.api(url, { json: { ...opts, dry_run: true } });
+        if (!plan.items.length) { this.error = ""; alert(`${this.fullCase}：沒有可刪除的資料`); return; }
+        const list = plan.items.slice(0, 15).map((i) => `${i.kind}: ${i.path}`).join("\n");
+        const more = plan.items.length > 15 ? `\n…另 ${plan.items.length - 15} 項` : "";
+        if (!confirm(`將刪除 ${this.fullCase} 的 ${plan.items.length} 項資料（${(plan.bytes / 1e6).toFixed(1)} MB），無法復原：\n${list}${more}`)) return;
+        await ESC.api(url, { json: { ...opts, dry_run: false } });
+        this.error = "";
+        await this.loadOverview();
+        if (this.variantId && !this.variantNames.includes(this.variantId)) this.variantId = "";
+        await this.refresh();
       } catch (e) { this.error = e.message; }
     },
     async run(step) {
