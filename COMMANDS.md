@@ -412,116 +412,142 @@ uv run escount infer --project x05_unpress --input Data/x05_unpress/test2.png --
 uv run escount infer --project x05_unpress --input Data/x05_unpress/test2.png --method baseline
 ```
 
-### 3.7 網路 Server API：Postman / LabVIEW 遠端推論
+## 3.7 推論 Server 使用指南（Postman / LabVIEW，本機）
 
-Server 開著時，其他程式（Postman、LabVIEW、Python requests……）可以透過 HTTP 送指令，效果等同 `escount infer`，並在回應中直接回傳預測片數 `N_pred`。互動式 API 文件：`http://<IP>:8000/docs`。
+Server 開著時，Postman、LabVIEW、Python 等程式可以用 HTTP 送指令給它，效果等同 `escount infer`，並在回應中直接回傳預測片數、頂/底部座標與高度。
+Server **只供本機使用**、**不需要 API Key**：網址一律用 `http://127.0.0.1:8000`（或 `localhost`），其他電腦無法連線。
+互動式 API 文件（可直接在瀏覽器試送）：`http://127.0.0.1:8000/docs`。
 
-#### (1) 啟動 Server（在跑分析的電腦，專案根目錄）
+### 3.7.1 啟動 Server
+
+在 PowerShell 執行（專案根目錄）：
 
 ```powershell
-# 只給本機（127.0.0.1）使用，不需要 API Key；--host 只接受 127.0.0.1 / localhost / ::1
-uv run escount serve --port 8000
-# 影像不在 Data 底下時，加 --root 指定允許讀取的資料夾（可重複）：--root Data --root D:\Images
+cd F:\Antigravity_2_0\20261102_ESCountingFinace
+.\.venv\Scripts\python.exe -m escount.cli serve --host 127.0.0.1 --port 8000
 ```
 
-- 視窗需保持開啟，Ctrl+C 停止。修改程式、或在 WebUI 重新校正 / 訓練後，請重開 Server（或重新 load 專案）。
-- Server 只供本機使用：其他電腦無法連線（綁定非本機位址會拒絕啟動，非本機 Host 標頭回 400）。
+- 等同 `uv run escount serve --port 8000`。看到 `Uvicorn running on http://127.0.0.1:8000` 即啟動成功。
+- 視窗需保持開啟，**Ctrl+C** 停止。修改程式、或在 WebUI 重新校正 / 訓練後，請重開 Server（或重新送「載入專案」）。
 - 連線測試：瀏覽器開 `http://127.0.0.1:8000/health`，看到 `{"status":"ok",...}` 即成功。
+- **8000 已被佔用**（啟動失敗或連到舊版 Server）：先關掉舊的 Server 視窗，或查出並結束佔用的行程：
+  ```powershell
+  Get-NetTCPConnection -LocalPort 8000 -State Listen | % { Get-Process -Id $_.OwningProcess }   # 查看
+  Stop-Process -Id <上面顯示的 Id>                                                               # 結束
+  ```
+  或改用其他埠，例如 `--port 8001`（下面所有網址的 `8000` 也要一起改）。
+- 影像不在 `Data` 資料夾底下時，啟動時加 `--root` 指定允許讀取的資料夾（可重複）：`--root Data --root D:\Images`。
 
-#### (2) Postman 共用設定
+### 3.7.2 Postman 共用設定（每個請求都一樣）
 
 | 項目 | 設定 |
 |---|---|
-| Authorization | 不需要（No Auth） |
-| Body | **raw** → **JSON**（自動帶 `Content-Type: application/json`） |
-| 網址 | `http://127.0.0.1:8000` |
+| Method | `POST` |
+| Authorization | **No Auth**（不需要 API Key） |
+| Params 分頁 | 不用填 |
+| Body | 選 **raw**，右側下拉選 **JSON**（Postman 會自動帶 `Content-Type: application/json`） |
 
-#### (3) 請求 1：載入專案（切換專案時送一次即可）
+> **最常見的錯誤**：把影像路徑接在網址後面（例如 `http://127.0.0.1:8000/infer/"F:\\...\\test107.png"`）。
+> 網址**只能**是下面列出的固定網址，影像路徑一律寫在 **Body** 的 `"path"` 欄位；網址寫錯 Server 會回 `{"detail": "Not Found"}`。
 
-- `POST http://127.0.0.1:8000/projects/press-White-60/load`
+### 3.7.3 請求 1：載入專案（切換專案時送一次即可）
+
+- 網址（`20261123_02mm_TestHeightWithoutRule` 換成要用的專案名稱）：
+```
+http://127.0.0.1:8000/projects/20261123_02mm_TestHeightWithoutRule/load
+```
 - Body：
-
 ```json
 {"model": "project"}
 ```
 
-`model`：`project`（專案模型）或 `general`（跨專案通用模型）。回應 `"loaded": true` 表示成功。
-**注意：此請求只載入模型，不做推論；推論參數要送到請求 2 的 `/infer/path`。**
+`model`：`project` = 該專案自己訓練的模型；`general` = 跨專案通用模型。回應有 `"loaded": true` 即成功。
+此請求只載入模型、不做推論；推論請送請求 2。
 
-#### (4) 請求 2：推論（對應 CLI 指令）
+### 3.7.4 請求 2：推論（傳影像路徑）
 
-CLI：`uv run escount infer --project press-White-60 --input Data/press-White-60/test2.png --roi-mode all --method auto --output outputs/myTest`
-
-- `POST http://127.0.0.1:8000/infer/path`
-- Body：
-
+- 網址（固定，後面不要再加任何東西）：
+```
+http://127.0.0.1:8000/infer/path
+```
+- Body（只要片數 / 頂底部 / 高度時用 `"summary": true`）：
 ```json
 {
-  "path": "Data/press-White-60/test2.png",
-  "project": "press-White-60",
-  "roi_mode": "all",
+  "path": "Data/20261123_02mm_TestHeightWithoutRule/100.png",
+  "project": "20261123_02mm_TestHeightWithoutRule",
+  "model": "project",
+  "roi_mode": "minimal",
   "method": "auto",
-  "output": "outputs/myTest"
+  "summary": true
 }
 ```
+- 回應：
+```json
+{"N_pred": 100, "stack_y_top": 1007, "stack_y_bottom": 1984, "stack_height_mm": 21.69}
+```
 
-| 欄位 | 必填 | 說明（對應 CLI 參數） |
+| 欄位 | 必填 | 說明（對應 CLI `escount infer` 參數） |
 |---|---|---|
-| `path` | 是 | 影像路徑（`--input`，單一 .png/.bmp）；相對路徑以 Server 啟動目錄為準，絕對路徑在 JSON 中寫成 `F:\\...\\test2.png`；必須位於 `--root` 資料夾內 |
-| `project` | 否 | 專案名稱（`--project`）；省略 = 最後一次 load 的專案（須先 load，否則 409） |
-| `model` | 否 | `project` / `general`（`--model`） |
-| `roi_mode` | 否 | `minimal`（預設）/ `all`（`--roi-mode`） |
+| `path` | 是 | 影像路徑（`--input`，單一 .png / .bmp），必須在 `Data`（或 `--root`）資料夾內。相對路徑以專案根目錄為準，例如 `"Data/test107.png"`；絕對路徑的 `\` 要寫兩次：`"F:\\Antigravity_2_0\\20261102_ESCountingFinace\\Data\\test107.png"` |
+| `project` | 否 | 專案名稱（`--project`），須與請求 1 載入的相同；省略 = 最後一次載入的專案 |
+| `model` | 否 | `project`（預設）/ `general`（`--model`） |
+| `roi_mode` | 否 | `minimal`（預設，最少 ROI）/ `all`（全部 ROI）（`--roi-mode`） |
 | `method` | 否 | `auto`（預設）/ `baseline` / `kd` / `macd` / `xgboost` / `ridge` / `trimmed_mean`（`--method`） |
-| `output` | 否 | 輸出資料夾（`--output`），須為 `outputs/` 底下的相對路徑；省略 = 只回傳結果、不寫檔 |
-| `summary` | 否 | `false`（預設）= 完整回應；`true` = 只回傳精簡 JSON（見 (5)），有 `output` 時檔案照寫 |
+| `summary` | 否 | `true` = 只回傳 4 個欄位（見 3.7.5）；`false` 或省略 = 完整回應（含每個 ROI 明細） |
+| `output` | 否 | 例如 `"outputs/myTest"`：另外寫出與 CLI 相同的結果檔（`predictions.csv`、`<影像名>/{corrected.png, analysis.png, signals.csv, result.json}`，有高度模型時另有 `heights.csv`）；須為 `outputs/` 底下的相對路徑。省略 = 只回傳、不寫檔 |
 
-有 `output` 時寫出的檔案與 CLI 相同：`outputs/myTest/predictions.csv`、`outputs/myTest/test2/{corrected.png, analysis.png, signals.csv, result.json}`；專案有像素-高度比例模型時另有 `heights.csv`。
+換圖只要改 `path` 的檔名，模型不必重新載入。
 
-#### (5) 回應內容（JSON）
+### 3.7.5 回應內容
+
+**精簡回應**（`"summary": true`）只有這 4 個欄位：
 
 | 欄位 | 說明 |
 |---|---|
-| `N_pred` | **預測片數（整數）** |
-| `gt` / `hit` | 檔名為數字時的 GT 與是否命中，否則為 `null` |
-| `roi_mode`、`method`、`model_type` | 實際使用的方案 |
-| `stack_y_top` / `stack_y_bottom` | 堆疊頂部（自上第一片）/ 底部（自下第一片）Y 座標（各 ROI 中位數） |
-| `rois[]` | 每個 ROI：`prediction`、`y_top`、`y_bottom`；有比例模型時另有 `height_mm`、`height_left_mm`、`height_right_mm`、`height_extrapolated`（`true` = 含外插需複查） |
-| `stack_height_mm` | 各 ROI 高度平均（僅有比例模型時） |
-| `output_dir`、`outputs` | 寫出的資料夾與檔名（僅有 `output` 時） |
-| `timings_ms` | 各階段耗時 |
+| `N_pred` | 預測片數（整數） |
+| `stack_y_top` | 堆疊頂部 Y 座標 = 第一片電磁鋼的上緣（各 ROI 中位數，像素） |
+| `stack_y_bottom` | 堆疊底部 Y 座標 = 最後一片電磁鋼的下緣（不含底座） |
+| `stack_height_mm` | 堆疊高度（mm）；專案沒有像素-高度比例模型時為 `null` |
 
-`summary: true`（`/infer/image` 用 `?summary=true`）時只回傳這 4 個欄位：
+**完整回應**（預設）另外包含：
 
-```json
-{"N_pred": 168, "stack_y_top": 220, "stack_y_bottom": 1765, "stack_height_mm": 20.23}
-```
-
-`stack_y_top` / `stack_y_bottom` = 第一片上緣 / 最後一片下緣的 Y 座標；`stack_height_mm` 在專案沒有像素-高度比例模型時為 `null`。
-
-#### (6) 直接上傳影像（不經檔案路徑，適合 LabVIEW 取像後直接送）
-
-- `POST http://127.0.0.1:8000/infer/image?project=press-White-60&name=test2.png`（加 `&summary=true` = 精簡回應）
-- Postman Body 選 **binary** 並選擇 PNG/BMP 檔（或 form-data，欄位名稱 `file`）。
-- 影像須與專案影像同尺寸（2448×2048）；此端點只回傳結果、不寫檔，使用最少 ROI + auto 方案。
-
-#### (7) 常見錯誤
-
-| 狀態碼 | 原因 |
+| 欄位 | 說明 |
 |---|---|
-| 無回應 / 逾時 | Server 未啟動，或網址不是 `127.0.0.1` / `localhost` |
-| 400 | 用非本機位址（例如區網 IP）連線：Server 只接受本機 |
-| 403 | `path` 不在 `--root` 內，或 `output` 不在 `outputs/` 內 / 含 `..` / 為絕對路徑 |
-| 404 | 專案或影像檔不存在 |
-| 409 | 尚未 load 專案 |
-| 422 | 參數值錯誤（如 `roi_mode` 拼錯）、影像尺寸不符、專案未訓練 |
+| `gt` / `hit` | 檔名為純數字（如 `100.png`）時的正確片數與是否命中；否則為 `null` |
+| `roi_mode`、`method`、`model_type` | 實際使用的方案 |
+| `rois[]` | 每個 ROI：`prediction`、`y_top`、`y_bottom`；有高度模型時另有 `height_mm`、`height_left_mm`、`height_right_mm`、`height_extrapolated`（`true` = 含外插，需複查） |
+| `output_dir`、`outputs` | 寫出的資料夾與檔名（僅有 `output` 時） |
+| `timings_ms` | 各階段耗時（毫秒） |
 
-#### (8) PowerShell 等效呼叫（不用 Postman 時）
+### 3.7.6 直接上傳影像（不經檔案路徑，適合 LabVIEW 取像後直接送）
+
+- 網址（參數寫在網址的 `?` 後面，這是唯一要在網址帶參數的請求）：
+```
+http://127.0.0.1:8000/infer/image?project=20261123_02mm_TestHeightWithoutRule&name=100.png&summary=true
+```
+- Postman Body 選 **binary**，再選擇 PNG / BMP 檔（或選 form-data，欄位名稱 `file`、型態 File）。
+- 回應格式同 3.7.5。此請求只回傳結果、不寫檔，使用最少 ROI + auto 方案。
+
+### 3.7.7 常見錯誤
+
+| 回應 | 原因與處理 |
+|---|---|
+| `{"detail": "Not Found"}`（404） | **網址打錯**，最常見是把影像路徑接在網址後面；網址只能是 3.7.3 / 3.7.4 / 3.7.6 的固定格式 |
+| 404（其他說明文字） | 專案名稱或影像檔不存在，檢查拼字與路徑 |
+| 409 | 還沒送請求 1 載入專案，或 `project` 與載入的不同 |
+| 403 | `path` 不在 `Data`（或 `--root`）資料夾內；或 `output` 不在 `outputs/` 內、含 `..`、是絕對路徑 |
+| 400 | 網址不是 `127.0.0.1` / `localhost`（例如用區網 IP）：Server 只接受本機 |
+| 415 | 影像不是 .png / .bmp |
+| 422 | 參數值錯誤（如 `roi_mode` 拼錯）、影像尺寸與專案不同（須 2448×2048）、專案尚未訓練 |
+| 無回應 / 逾時 | Server 沒有啟動，或埠號不對 |
+
+### 3.7.8 PowerShell 等效呼叫（不用 Postman 時）
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/projects/press-White-60/load -Method Post -ContentType application/json -Body '{"model":"project"}'
+Invoke-RestMethod http://127.0.0.1:8000/projects/20261123_02mm_TestHeightWithoutRule/load -Method Post -ContentType application/json -Body '{"model":"project"}'
 $r = Invoke-RestMethod http://127.0.0.1:8000/infer/path -Method Post -ContentType application/json `
-     -Body '{"path":"Data/press-White-60/test2.png","project":"press-White-60","roi_mode":"all","method":"auto","output":"outputs/myTest"}'
-$r.N_pred
+     -Body '{"path":"Data/20261123_02mm_TestHeightWithoutRule/100.png","project":"20261123_02mm_TestHeightWithoutRule","summary":true}'
+$r      # N_pred / stack_y_top / stack_y_bottom / stack_height_mm
 ```
 
 LabVIEW（HTTP Client VIs）流程與欄位說明另見 `docs/labview_api.md`。
