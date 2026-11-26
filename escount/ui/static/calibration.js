@@ -10,7 +10,7 @@ const emptyRatio = () => ({ left: { 10: [], 5: [], 1: [] }, right: { 10: [], 5: 
 Vue.createApp({
   data() {
     return {
-      apiKey: ESC.apiKey(), cases: [], caseId: "", images: [], reference: "", loadedReference: "",
+      cases: [], caseId: "", images: [], reference: "", loadedReference: "",
       imageSize: { width: 0, height: 0 }, validRegion: null, defaultRois: [], minSide: 300, minMargin: 50,
       rois: [], selected: 1, side: 384, step: 10,
       strips: { n: 4, w: 16, pitch: 30, side_margin: 50, x_offset: 0 },
@@ -39,7 +39,6 @@ Vue.createApp({
   },
   methods: {
     fmt(value) { return Number(value).toFixed(4); },
-    saveKey() { ESC.setApiKey(this.apiKey); },
 
     async loadCase() {
       ESC.setLastCase(this.caseId);

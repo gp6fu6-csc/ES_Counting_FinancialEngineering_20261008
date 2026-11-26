@@ -16,7 +16,7 @@
   escount variant create|list --project <id> ...  -> ROI-strip variants (shared calibration, own strips)
   escount run-variants --projects A B --variants v1 v2 [--trials N ...]
                                           -> train every project x variant in turn, save runs/<run>/run.json
-  escount serve [--host 127.0.0.1] [--port 8000] [--api-key K | env ESCOUNT_API_KEY] [--root Data]
+  escount serve [--host 127.0.0.1] [--port 8000] [--root Data]
                                           -> FastAPI inference server (LabVIEW), OpenAPI at /docs
 The migrated V3 pipelines stay reachable unchanged:
   escount legacy-count  <args>   -> escount.es_counting (calibrate / analyze / run-all / predict)
@@ -421,9 +421,8 @@ def cmd_purge(args):
 def cmd_serve(args):
     from escount.server.app import ServerConfig, check_bind, create_app
 
-    api_key = args.api_key or os.environ.get(API_KEY_ENV) or None   # env var keeps the key off the process list
     try:
-        check_bind(args.host, api_key)
+        check_bind(args.host)
     except ValueError as error:
         raise SystemExit(f"escount serve: {error}") from error
     import uvicorn
@@ -432,14 +431,13 @@ def cmd_serve(args):
 
     single_thread()                           # inference: single-process, single-thread CPU
     config = ServerConfig(profiles_root=args.profiles_root, allowed_roots=tuple(args.root or ["Data"]),
-                          api_key=api_key, general_config=args.config,
+                          general_config=args.config,
                           features_root=args.features_root, results_root=args.results_root)
     uvicorn.run(create_app(config), host=args.host, port=args.port, log_level="info")
     return 0
 
 
 DEFAULT_STORAGE = "sqlite:///research/study.db"   # = escount.research.daemon.DEFAULT_STORAGE (lazy import)
-API_KEY_ENV = "ESCOUNT_API_KEY"
 
 
 def _research_paths(command):
@@ -670,10 +668,8 @@ def build_parser():
     purge.set_defaults(func=cmd_purge)
 
     serve = sub.add_parser("serve", help="FastAPI inference server + web UI (default 127.0.0.1:8000)")
-    serve.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1; others need --api-key)")
+    serve.add_argument("--host", default="127.0.0.1", help="bind address (local only: 127.0.0.1 / localhost / ::1)")
     serve.add_argument("--port", type=int, default=8000, help="port (default 8000)")
-    serve.add_argument("--api-key", help=f"require this value in the X-API-Key header (all endpoints but /health); "
-                                         f"default: ${API_KEY_ENV} (preferred: not visible in the process list)")
     serve.add_argument("--root", action="append", help="folder /infer/path may read from (repeatable; default Data)")
     serve.add_argument("--profiles-root", default="outputs/projects", help="project profiles (default: outputs/projects)")
     serve.add_argument("--config", default="configs/general.json", help="General config (production General model)")

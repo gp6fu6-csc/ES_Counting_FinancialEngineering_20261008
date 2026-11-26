@@ -12,7 +12,7 @@ const STEPS = [
 
 Vue.createApp({
   data() {
-    return { apiKey: ESC.apiKey(), cases: [], caseId: "", device: "cuda", steps: STEPS,
+    return { cases: [], caseId: "", device: "cuda", steps: STEPS,
              status: {}, job: { log: [] }, error: "", timer: null,
              purgeOpts: { with_variants: false, research: false, all_files: false },
              variantId: "", overview: { projects: {}, variants: [] },
@@ -41,7 +41,6 @@ Vue.createApp({
     } catch (e) { this.error = e.message; }
   },
   methods: {
-    saveKey() { ESC.setApiKey(this.apiKey); },
     async loadOverview() { this.overview = await ESC.api("/variants"); },
     caseChanged() { this.variantId = ""; this.refresh(); },
     async startBatch() {

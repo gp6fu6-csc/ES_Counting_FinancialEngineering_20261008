@@ -43,8 +43,8 @@ class CalibrationApiTests(unittest.TestCase):
         cls._tmp.cleanup()
 
     @classmethod
-    def app(cls, api_key=None):
-        return create_app(ServerConfig(profiles_root=str(cls.profiles), allowed_roots=(str(cls.data),), api_key=api_key))
+    def app(cls):
+        return create_app(ServerConfig(profiles_root=str(cls.profiles), allowed_roots=(str(cls.data),)))
 
     def body(self, rois=None, **strips):
         return {"reference": "082.png", "rois": rois or self.info["default_rois"],
@@ -136,9 +136,6 @@ class CalibrationApiTests(unittest.TestCase):
             self.assertNotIn("https://", text, own)
         for name in ("LICENSE-vue", "LICENSE-echarts", "NOTICE-echarts", "LICENSE-zrender", "VERSIONS.md"):
             self.assertTrue((UI_DIR / "vendor" / name).is_file(), name)
-        keyed = Client(self.app(api_key="k"))
-        self.assertEqual(keyed.get("/ui/calibration.html").status_code, 200)
-        self.assertEqual(keyed.get("/calibration/cases").status_code, 401)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Web UI 手動驗收清單
 
-啟動：`uv run escount serve`（預設 http://127.0.0.1:8000），瀏覽器開啟下列頁面。整個 UI 離線運作：只載入 `/ui/` 下的檔案（Vue 3 與 ECharts 已內含於 `/ui/vendor/`，版本與授權見 `escount/ui/static/vendor/VERSIONS.md`），不需網路、不需 Node。若 Server 有設定 `--api-key`，先在右上角「API Key」欄輸入金鑰（只存在該分頁的 sessionStorage）。
+啟動：`uv run escount serve`（預設 http://127.0.0.1:8000），瀏覽器開啟下列頁面。整個 UI 離線運作：只載入 `/ui/` 下的檔案（Vue 3 與 ECharts 已內含於 `/ui/vendor/`，版本與授權見 `escount/ui/static/vendor/VERSIONS.md`），不需網路、不需 Node。Server 只供本機使用，不需要 API Key。
 
 ## 校正頁 `/ui/calibration.html`（PDF p12）
 

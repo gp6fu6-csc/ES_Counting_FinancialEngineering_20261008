@@ -15,9 +15,6 @@
       <a href="/ui/training.html">訓練</a>
       <a href="/ui/results.html" class="active" aria-current="page">結果</a>
     </nav>
-    <label class="apikey">API Key
-      <input type="password" v-model="apiKey" @change="saveKey" autocomplete="off" placeholder="(本機可留空)">
-    </label>
   </header>
 
   <main class="layout results">
@@ -89,6 +86,7 @@
           頂部 y={{ roi.y_top }} · 底部 y={{ roi.y_bottom }}</span>
         <label class="height-toggle" :title="result.has_height_model ? '' : '此專案沒有像素-高度比例預測模型'">
           <input type="checkbox" v-model="showHeight" :disabled="!result.has_height_model"> 高度</label>
+        <label class="height-toggle"><input type="checkbox" v-model="showEdges"> 頂/底部</label>
         <span v-if="showHeight && result.has_height_model" class="height-value">{{ heightText }}</span>
         <button @click="moveRoi(1)" :disabled="roiIndex >= result.rois.length - 1" aria-label="下一組 ROI">▶</button>
       </div>
@@ -121,9 +119,11 @@
         <div class="roi-slice-track" ref="sliceTrack">
           <div class="roi-slice-viewport" ref="sliceViewport" @dblclick="measureAdd" @contextmenu.prevent="measureRight">
             <img :src="roi.slice_image" class="roi-slice-img" ref="sliceImg" alt="ROI 橫置切片影像">
-            <template v-if="measuring">
+            <template v-if="showEdges">
               <div v-for="m in edgeMarks" :key="m.cls" :class="['edge-mark', m.cls]" :style="{ left: m.left }">
                 <span>{{ m.label }}</span></div>
+            </template>
+            <template v-if="measuring">
               <div v-for="(y, i) in measurePoints" :key="'m' + i" class="measure-line"
                    :class="'m' + i" :style="{ left: sliceLeft(y) }"></div>
             </template>

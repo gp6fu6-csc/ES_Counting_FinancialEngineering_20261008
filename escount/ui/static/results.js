@@ -32,13 +32,13 @@ const line = (name, data, color, extra = {}) =>
 Vue.createApp({
   data() {
     return {
-      apiKey: ESC.apiKey(), projects: [], caseId: "", variantOptions: [], variantChoice: "", pendingChoice: "", runInfo: null,
+      projects: [], caseId: "", variantOptions: [], variantChoice: "", pendingChoice: "", runInfo: null,
       variantStrips: {},
       models: [], model: "project", roiMode: "minimal",
       recommendedEnsemble: "", methodChoice: "auto", images: [], image: "",
       macd: { ema1: 2, ema2: 4, dea: 2 }, kd: { n: 4, k: 2, d: 2 }, overridden: false,
       result: null, roiIndex: 0, error: "", loading: false, requestId: 0, zoomKey: "",
-      zoomRange: { start: 0, end: 100 }, showHeight: false, measurePoints: [], measureResult: null, rightAt: 0,
+      zoomRange: { start: 0, end: 100 }, showHeight: false, showEdges: false, measurePoints: [], measureResult: null, rightAt: 0,
     };
   },
   computed: {
@@ -197,7 +197,6 @@ Vue.createApp({
     } catch (e) { this.error = e.message; }
   },
   methods: {
-    saveKey() { ESC.setApiKey(this.apiKey); },
     pickCase() { ESC.setLastCase(this.caseId); this.loadCase(); },
     fmtMm(v) { return v === null || v === undefined ? "?" : v.toFixed(3); },
     // ---- slice x <-> image row (the slice runs from y0 at the left to y1 at the right, under the zoom window)

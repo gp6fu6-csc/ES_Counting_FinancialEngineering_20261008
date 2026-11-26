@@ -419,27 +419,22 @@ Server 開著時，其他程式（Postman、LabVIEW、Python requests……）�
 #### (1) 啟動 Server（在跑分析的電腦，專案根目錄）
 
 ```powershell
-# 只給本機（127.0.0.1）使用：不需要 API Key
-uv run escount serve
-
-# 開放給其他電腦：--host 0.0.0.0 必須設定 API Key，否則拒絕啟動
-$env:ESCOUNT_API_KEY = "escount123"            # 自訂金鑰；用環境變數，金鑰不會出現在行程清單
-uv run escount serve --host 0.0.0.0 --port 8000
+# 只給本機（127.0.0.1）使用，不需要 API Key；--host 只接受 127.0.0.1 / localhost / ::1
+uv run escount serve --port 8000
 # 影像不在 Data 底下時，加 --root 指定允許讀取的資料夾（可重複）：--root Data --root D:\Images
 ```
 
 - 視窗需保持開啟，Ctrl+C 停止。修改程式、或在 WebUI 重新校正 / 訓練後，請重開 Server（或重新 load 專案）。
-- 其他電腦連線：用 `ipconfig` 查本機 IPv4（與對方同網段的那張網卡），並以系統管理員開放防火牆：
-  `New-NetFirewallRule -DisplayName "ESCounting 8000" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow`
-- 連線測試：瀏覽器開 `http://<IP>:8000/health`，看到 `{"status":"ok",...}` 即成功。
+- Server 只供本機使用：其他電腦無法連線（綁定非本機位址會拒絕啟動，非本機 Host 標頭回 400）。
+- 連線測試：瀏覽器開 `http://127.0.0.1:8000/health`，看到 `{"status":"ok",...}` 即成功。
 
 #### (2) Postman 共用設定
 
 | 項目 | 設定 |
 |---|---|
-| Authorization | Type = **API Key**，Key = `X-API-Key`，Value = `escount123`，Add to = Header（本機模式未設金鑰可省略） |
+| Authorization | 不需要（No Auth） |
 | Body | **raw** → **JSON**（自動帶 `Content-Type: application/json`） |
-| 網址 | 同一台電腦用 `http://127.0.0.1:8000`；其他電腦用 `http://<本機IP>:8000` |
+| 網址 | `http://127.0.0.1:8000` |
 
 #### (3) 請求 1：載入專案（切換專案時送一次即可）
 
@@ -478,6 +473,7 @@ CLI：`uv run escount infer --project press-White-60 --input Data/press-White-60
 | `roi_mode` | 否 | `minimal`（預設）/ `all`（`--roi-mode`） |
 | `method` | 否 | `auto`（預設）/ `baseline` / `kd` / `macd` / `xgboost` / `ridge` / `trimmed_mean`（`--method`） |
 | `output` | 否 | 輸出資料夾（`--output`），須為 `outputs/` 底下的相對路徑；省略 = 只回傳結果、不寫檔 |
+| `summary` | 否 | `false`（預設）= 完整回應；`true` = 只回傳精簡 JSON（見 (5)），有 `output` 時檔案照寫 |
 
 有 `output` 時寫出的檔案與 CLI 相同：`outputs/myTest/predictions.csv`、`outputs/myTest/test2/{corrected.png, analysis.png, signals.csv, result.json}`；專案有像素-高度比例模型時另有 `heights.csv`。
 
@@ -494,9 +490,17 @@ CLI：`uv run escount infer --project press-White-60 --input Data/press-White-60
 | `output_dir`、`outputs` | 寫出的資料夾與檔名（僅有 `output` 時） |
 | `timings_ms` | 各階段耗時 |
 
+`summary: true`（`/infer/image` 用 `?summary=true`）時只回傳這 4 個欄位：
+
+```json
+{"N_pred": 168, "stack_y_top": 220, "stack_y_bottom": 1765, "stack_height_mm": 20.23}
+```
+
+`stack_y_top` / `stack_y_bottom` = 第一片上緣 / 最後一片下緣的 Y 座標；`stack_height_mm` 在專案沒有像素-高度比例模型時為 `null`。
+
 #### (6) 直接上傳影像（不經檔案路徑，適合 LabVIEW 取像後直接送）
 
-- `POST http://127.0.0.1:8000/infer/image?project=press-White-60&name=test2.png`
+- `POST http://127.0.0.1:8000/infer/image?project=press-White-60&name=test2.png`（加 `&summary=true` = 精簡回應）
 - Postman Body 選 **binary** 並選擇 PNG/BMP 檔（或 form-data，欄位名稱 `file`）。
 - 影像須與專案影像同尺寸（2448×2048）；此端點只回傳結果、不寫檔，使用最少 ROI + auto 方案。
 
@@ -504,8 +508,8 @@ CLI：`uv run escount infer --project press-White-60 --input Data/press-White-60
 
 | 狀態碼 | 原因 |
 |---|---|
-| 無回應 / 逾時 | IP 不對、Server 只綁 127.0.0.1（未加 `--host 0.0.0.0`）、防火牆未開 |
-| 401 | 沒帶 `X-API-Key` 或金鑰錯誤 |
+| 無回應 / 逾時 | Server 未啟動，或網址不是 `127.0.0.1` / `localhost` |
+| 400 | 用非本機位址（例如區網 IP）連線：Server 只接受本機 |
 | 403 | `path` 不在 `--root` 內，或 `output` 不在 `outputs/` 內 / 含 `..` / 為絕對路徑 |
 | 404 | 專案或影像檔不存在 |
 | 409 | 尚未 load 專案 |
@@ -514,9 +518,8 @@ CLI：`uv run escount infer --project press-White-60 --input Data/press-White-60
 #### (8) PowerShell 等效呼叫（不用 Postman 時）
 
 ```powershell
-$h = @{ "X-API-Key" = "escount123" }
-Invoke-RestMethod http://127.0.0.1:8000/projects/press-White-60/load -Method Post -Headers $h -ContentType application/json -Body '{"model":"project"}'
-$r = Invoke-RestMethod http://127.0.0.1:8000/infer/path -Method Post -Headers $h -ContentType application/json `
+Invoke-RestMethod http://127.0.0.1:8000/projects/press-White-60/load -Method Post -ContentType application/json -Body '{"model":"project"}'
+$r = Invoke-RestMethod http://127.0.0.1:8000/infer/path -Method Post -ContentType application/json `
      -Body '{"path":"Data/press-White-60/test2.png","project":"press-White-60","roi_mode":"all","method":"auto","output":"outputs/myTest"}'
 $r.N_pred
 ```

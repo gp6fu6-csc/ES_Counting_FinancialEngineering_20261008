@@ -1,15 +1,9 @@
 // Shared helpers of the ESCounting UI pages (plain script, Vue 3 global build, no Node build step).
 "use strict";
 const ESC = (() => {
-  const KEY_NAME = "escount.apiKey";
-
-  const apiKey = () => sessionStorage.getItem(KEY_NAME) || "";
-  const setApiKey = (value) => sessionStorage.setItem(KEY_NAME, value || "");
-
-  // fetch wrapper: adds X-API-Key when set, JSON bodies, readable errors ("<status>: <detail>")
+  // fetch wrapper: JSON bodies, readable errors ("<status>: <detail>")
   async function api(path, options = {}) {
     const headers = Object.assign({}, options.headers || {});
-    if (apiKey()) headers["X-API-Key"] = apiKey();
     let body = options.body;
     if (options.json !== undefined) {
       headers["Content-Type"] = "application/json";
@@ -27,7 +21,7 @@ const ESC = (() => {
     return options.raw ? response : response.json();
   }
 
-  // images are fetched (not <img src>) so that the API key header is sent too
+  // images are fetched (not <img src>) and decoded to an ImageBitmap
   async function bitmap(path) {
     const response = await api(path, { raw: true });
     return createImageBitmap(await response.blob());
@@ -45,5 +39,5 @@ const ESC = (() => {
   const CASE_NAME = "escount.case";
   const lastCase = () => new URLSearchParams(location.search).get("case") || localStorage.getItem(CASE_NAME) || "";
   const setLastCase = (value) => { if (value) localStorage.setItem(CASE_NAME, value); };
-  return { apiKey, setApiKey, api, bitmap, debounce, lastCase, setLastCase };
+  return { api, bitmap, debounce, lastCase, setLastCase };
 })();

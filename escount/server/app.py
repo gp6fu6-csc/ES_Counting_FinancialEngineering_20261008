@@ -1,6 +1,6 @@
 """Inference server (Task 10): FastAPI app for LabVIEW and other systems.
 
-  GET  /health                     liveness (never needs the API key)
+  GET  /health                     liveness
   GET  /projects                   calibrated projects under profiles_root (+ General models, loaded engines)
   POST /projects/{case}/load       load an InferenceEngine once ({"model": "project"|"general"}); becomes current
   POST /infer/path                 {"path": ..., "project"?, "model"?, "roi_mode"?, "method"?, "output"?} -> image read
@@ -9,6 +9,8 @@
                                    "case" of load / preview / results may be <project>@<variant>[~<run>] (escount.variants)
   POST /calibration/{case}/variants/{name}   save only the strips as a variant;  POST /training/batch  run-variants job
   POST /infer/image                PNG/BMP bytes (multipart field "file" or raw body) -> cv2.imdecode
+  summary=true (body field of /infer/path, query of /infer/image) -> only {N_pred, stack_y_top, stack_y_bottom,
+                                   stack_height_mm} (height None without a height model)
 OpenAPI / Swagger UI at /docs. Inference is serial (one lock), single-thread CPU, nothing is written.
 
 Web UI (static, offline, vendored Vue 3 + ECharts) at /ui/calibration.html (PDF p12) with
@@ -22,17 +24,15 @@ and /ui/results.html (PDF p13-14) with
   POST /results/{case}/height      height (mm) between two image rows with the project's height model
 Project image folders are read from the first allowed root.
 
-Security: `escount serve` binds 127.0.0.1 by default and refuses any other host without an API key
-(check_bind). With an API key every request except /health, the OpenAPI docs and the static UI
-files needs the header X-API-Key (401 otherwise). Without an API key only loopback Host headers
-(127.0.0.1, localhost, ::1) are answered (400 otherwise; DNS-rebinding guard). /infer/path only
+Security: local use only, no API key. `escount serve` binds the loopback interface only (check_bind
+refuses any other host) and only loopback Host headers (127.0.0.1, localhost, ::1) are answered (400
+otherwise; DNS-rebinding guard). /infer/path only
 reads files whose path lies inside one of the configured allowed roots, checked lexically before
 any file-system access and again after resolve(); '..' segments and UNC paths are rejected (403).
 """
 import json
 import os
 import re
-import secrets
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -61,9 +61,7 @@ from escount.variants import (
     variant_strips,
 )
 
-API_KEY_HEADER = "X-API-Key"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-PUBLIC_PATHS = frozenset({"/", "/health", "/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"})
 CASE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@~-]*$")      # <case>[@<variant>[~<run>]], see escount.variants
 IMAGE_SUFFIXES = (".png", ".bmp")
 IMAGE_MAGIC = (b"\x89PNG\r\n\x1a\n", b"BM")
@@ -77,7 +75,6 @@ DEFAULT_STRIPS = {"n": 4, "w": 16, "pitch": 30, "side_margin": MIN_SIDE_MARGIN, 
 class ServerConfig:
     profiles_root: str = "outputs/projects"
     allowed_roots: tuple = ("Data",)      # /infer/path may only read inside these folders
-    api_key: Optional[str] = None
     general_config: str = "configs/general.json"
     results_root: str = "outputs/infer"   # `escount infer` outputs (<case>/<image stem>/...) for the results page
     output_root: str = "outputs"          # /infer/path "output" folders must lie inside this folder
@@ -87,10 +84,10 @@ class ServerConfig:
     storage: Optional[str] = None            # Optuna storage (None = escount.research.daemon.DEFAULT_STORAGE)
 
 
-def check_bind(host, api_key):
-    """Refuse to expose the server beyond the loopback interface without an API key."""
-    if host not in LOOPBACK_HOSTS and not api_key:
-        raise ValueError(f"refusing to bind {host!r} without an API key: use --api-key (or bind 127.0.0.1)")
+def check_bind(host):
+    """Local use only: refuse to expose the server beyond the loopback interface."""
+    if host not in LOOPBACK_HOSTS:
+        raise ValueError(f"refusing to bind {host!r}: the server is local-only (bind 127.0.0.1)")
 
 
 def host_name(header):
@@ -101,10 +98,6 @@ def host_name(header):
     return header.rsplit(":", 1)[0] if header.count(":") == 1 else header
 
 
-def _is_public(path):
-    return path in PUBLIC_PATHS or path == "/ui" or path.startswith("/ui/")
-
-
 def _json_default(value):
     if isinstance(value, np.generic):
         return value.item()
@@ -113,6 +106,14 @@ def _json_default(value):
     if isinstance(value, Path):
         return str(value)
     raise TypeError(f"not JSON serializable: {type(value)}")
+
+
+SUMMARY_KEYS = ("N_pred", "stack_y_top", "stack_y_bottom", "stack_height_mm")
+
+
+def summary_record(record):
+    """`summary=true` reply of /infer/path and /infer/image; stack_height_mm is None without a height model."""
+    return {key: record.get(key) for key in SUMMARY_KEYS}
 
 
 def jsonable(value):
@@ -334,6 +335,7 @@ class PathRequest(BaseModel):
     roi_mode: Literal["minimal", "all"] = "minimal"
     method: Literal["auto", "baseline", "kd", "macd", "xgboost", "ridge", "trimmed_mean"] = "auto"
     output: Optional[str] = None      # e.g. "outputs/myTest": also write the `escount infer` files there
+    summary: bool = False             # True: reply only SUMMARY_KEYS (count, stack top / bottom, height)
 
 
 class RoiModel(BaseModel):
@@ -492,15 +494,11 @@ def create_app(config=ServerConfig()):
     app.state.server = state
 
     @app.middleware("http")
-    async def require_api_key(request: Request, call_next):
-        if not config.api_key and host_name(request.headers.get("host", "")) not in LOOPBACK_HOSTS:
-            # keyless server = loopback only: refuse foreign Host headers (DNS rebinding)
-            return JSONResponse({"detail": "invalid Host header: the keyless server only answers 127.0.0.1 / "
+    async def loopback_only(request: Request, call_next):
+        if host_name(request.headers.get("host", "")) not in LOOPBACK_HOSTS:
+            # local-only server: refuse foreign Host headers (DNS rebinding)
+            return JSONResponse({"detail": "invalid Host header: the server only answers 127.0.0.1 / "
                                            "localhost"}, status_code=400)
-        if config.api_key and not _is_public(request.url.path):
-            supplied = request.headers.get(API_KEY_HEADER, "")
-            if not secrets.compare_digest(supplied.encode("utf-8"), config.api_key.encode("utf-8")):
-                return JSONResponse({"detail": f"missing or invalid {API_KEY_HEADER} header"}, status_code=401)
         response = await call_next(request)
         if request.url.path.startswith("/ui/"):
             response.headers["Cache-Control"] = "no-cache"   # revalidate (ETag) so UI updates are never stale
@@ -544,14 +542,16 @@ def create_app(config=ServerConfig()):
         engine = state.engine(body.project, body.model)
         source = state.allowed_path(body.path)
         if body.output:
-            return state.infer_to_folder(engine, source, state.output_dir(body.output), body.roi_mode, body.method)
-        engine.runtime.forced_method = None if body.method == "auto" else body.method
-        return jsonable({key: value for key, value in InferenceEngine.result_record(
-            state.run(engine, source, roi_mode=body.roi_mode)).items() if key not in ("outputs", "dpi")})
+            record = state.infer_to_folder(engine, source, state.output_dir(body.output), body.roi_mode, body.method)
+        else:
+            engine.runtime.forced_method = None if body.method == "auto" else body.method
+            record = jsonable({key: value for key, value in InferenceEngine.result_record(
+                state.run(engine, source, roi_mode=body.roi_mode)).items() if key not in ("outputs", "dpi")})
+        return summary_record(record) if body.summary else record
 
     @app.post("/infer/image", openapi_extra=IMAGE_BODY)
     async def infer_image(request: Request, project: Optional[str] = None, model: Optional[ModelChoice] = None,
-                          name: Optional[str] = None):
+                          name: Optional[str] = None, summary: bool = False):
         engine = state.engine(project, model)
         engine.runtime.forced_method = None       # auto (a previous /infer/path or /preview may have forced one)
         if request.headers.get("content-type", "").startswith("multipart/form-data"):
@@ -563,7 +563,8 @@ def create_app(config=ServerConfig()):
         else:
             data = await request.body()
         image = decode_image(data)
-        return await run_in_threadpool(state.infer, engine, image, name or "image")
+        record = await run_in_threadpool(state.infer, engine, image, name or "image")
+        return summary_record(record) if summary else record
 
     # ------------------------------------------------------------ calibration page (Task 11, PDF p12)
     @app.get("/calibration/cases")

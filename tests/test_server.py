@@ -15,8 +15,6 @@ from escount.inference.engine import InferenceEngine
 from escount.server.app import ServerConfig, check_bind, create_app
 from synthetic_project import build
 
-KEY = "test-key-123"
-
 
 class ServerTests(unittest.TestCase):
     @classmethod
@@ -35,9 +33,9 @@ class ServerTests(unittest.TestCase):
     def tearDownClass(cls):
         cls._tmp.cleanup()
 
-    def app(self, api_key=None):
+    def app(self):
         return create_app(ServerConfig(profiles_root=str(self.profiles), allowed_roots=(str(self.data),),
-                                       api_key=api_key, general_config=str(self.config)))
+                                       general_config=str(self.config)))
 
     def loaded_client(self):
         client = Client(self.app())
@@ -103,18 +101,28 @@ class ServerTests(unittest.TestCase):
         loaded = self.loaded_client()
         self.assertEqual(loaded.post("/infer/path", json={"path": str(self.image), "project": "Other"}).status_code, 409)
 
-    def test_api_key_required_except_health(self):
-        app = self.app(api_key=KEY)
-        anonymous, wrong, good = Client(app), Client(app, {"X-API-Key": "wrong"}), Client(app, {"X-API-Key": KEY})
-        self.assertEqual(anonymous.get("/health").status_code, 200)
-        for client in (anonymous, wrong):
-            self.assertEqual(client.get("/projects").status_code, 401)
-            self.assertEqual(client.post("/projects/SynA/load").status_code, 401)
-            self.assertEqual(client.post("/infer/path", json={"path": str(self.image)}).status_code, 401)
-            self.assertEqual(client.post("/infer/image", content=self.image.read_bytes()).status_code, 401)
-        self.assertEqual(good.get("/projects").status_code, 200)
-        self.assertEqual(good.post("/projects/SynA/load").status_code, 200)
-        self.assert_same_result(good.post("/infer/path", json={"path": str(self.image)}))
+    def test_no_api_key_needed(self):
+        # local-only server: no X-API-Key header anywhere (a leftover header from old clients is ignored)
+        for client in (Client(self.app()), Client(self.app(), {"X-API-Key": "old-key"})):
+            self.assertEqual(client.get("/projects").status_code, 200)
+            self.assertEqual(client.post("/projects/SynA/load").status_code, 200)
+            self.assert_same_result(client.post("/infer/path", json={"path": str(self.image)}))
+
+    def test_summary_flag_replies_only_count_edges_and_height(self):
+        # LabVIEW: summary=true -> one flat JSON with the count, stack top / bottom rows and height (None without
+        # a height model); same values as the full reply, which stays the default
+        client = self.loaded_client()
+        full = client.post("/infer/path", json={"path": str(self.image)}).json()
+        expected = {key: full.get(key) for key in ("N_pred", "stack_y_top", "stack_y_bottom", "stack_height_mm")}
+        self.assertEqual(expected["N_pred"], 76)
+        self.assertIsNotNone(expected["stack_y_top"])
+        brief = client.post("/infer/path", json={"path": str(self.image), "summary": True})
+        self.assertEqual(brief.status_code, 200, brief.text)
+        self.assertEqual(brief.json(), expected)
+        png = self.image.read_bytes()
+        image = client.post("/infer/image", content=png, content_type="image/png", params={"summary": "true"})
+        self.assertEqual(image.json(), expected)
+        self.assertIn("rois", client.post("/infer/image", content=png, content_type="image/png").json())
 
     def test_path_traversal_and_outside_root_are_forbidden(self):
         client = self.loaded_client()
@@ -127,7 +135,7 @@ class ServerTests(unittest.TestCase):
         for unc in (r"\\203.0.113.7\share\076.png", "//203.0.113.7/share/076.png", r"\\?\UNC\203.0.113.7\s\076.png"):
             self.assertEqual(client.post("/infer/path", json={"path": unc}).status_code, 403, unc)
 
-    def test_keyless_server_rejects_foreign_host_headers(self):
+    def test_server_rejects_foreign_host_headers(self):
         client = Client(self.app())
         for host in ("127.0.0.1:8000", "localhost:8000", "localhost", "[::1]:8000"):
             self.assertEqual(client.get("/health", headers={"host": host}).status_code, 200, host)
@@ -135,8 +143,6 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(client.get("/projects", headers={"host": host}).status_code, 400, host)
             self.assertEqual(client.post("/calibration/SynA/save", json={"rois": [{"x": 0, "y": 0, "side": 300}]},
                                          headers={"host": host}).status_code, 400, host)
-        keyed = Client(self.app(api_key=KEY), {"X-API-Key": KEY, "host": "escount-pc:8000"})
-        self.assertEqual(keyed.get("/projects").status_code, 200)        # with a key any host name works
 
     def test_model_refused_after_calibration_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -154,24 +160,16 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(response.status_code, 422)
             self.assertIn("calibration", response.text)
 
-    def test_exposed_bind_requires_api_key(self):
-        with self.assertRaises(ValueError):
-            check_bind("0.0.0.0", None)
-        check_bind("127.0.0.1", None)
-        check_bind("0.0.0.0", KEY)
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("ESCOUNT_API_KEY", None)
+    def test_bind_is_local_only(self):
+        for host in ("0.0.0.0", "192.168.1.10"):
+            with self.assertRaises(ValueError):
+                check_bind(host)
             with self.assertRaises(SystemExit):
-                cli_main(["serve", "--host", "0.0.0.0"])
-
-    def test_serve_takes_api_key_from_environment(self):
-        with mock.patch.dict(os.environ, {"ESCOUNT_API_KEY": KEY}), mock.patch("uvicorn.run") as run, \
-                mock.patch("escount.inference.benchmark.single_thread"):
-            self.assertEqual(cli_main(["serve", "--host", "0.0.0.0", "--profiles-root", str(self.profiles),
-                                       "--config", str(self.config)]), 0)
-        app = run.call_args.args[0]
-        self.assertEqual(Client(app).get("/projects").status_code, 401)
-        self.assertEqual(Client(app, {"X-API-Key": KEY}).get("/projects").status_code, 200)
+                cli_main(["serve", "--host", host])
+        check_bind("127.0.0.1")
+        with mock.patch("uvicorn.run") as run, mock.patch("escount.inference.benchmark.single_thread"):
+            self.assertEqual(cli_main(["serve", "--profiles-root", str(self.profiles), "--config", str(self.config)]), 0)
+        self.assertEqual(Client(run.call_args.args[0]).get("/projects").status_code, 200)   # no key needed
 
     def test_openapi_documents_both_infer_modes(self):
         client = Client(self.app())
@@ -182,10 +180,9 @@ class ServerTests(unittest.TestCase):
         self.assertIn("multipart/form-data", paths["/infer/image"]["post"]["requestBody"]["content"])
 
     def test_root_redirects_to_ui(self):
-        for app in (self.app(), self.app(api_key=KEY)):        # public even when an API key is set
-            response = Client(app).get("/")
-            self.assertIn(response.status_code, (302, 307))
-            self.assertEqual(response.headers["location"], "/ui/training.html")
+        response = Client(self.app()).get("/")
+        self.assertIn(response.status_code, (302, 307))
+        self.assertEqual(response.headers["location"], "/ui/training.html")
 
 
 if __name__ == "__main__":
