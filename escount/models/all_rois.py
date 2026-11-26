@@ -22,7 +22,7 @@ from escount.features.extract import (
     extent_slots,
     roi_features,
 )
-from escount.models.store import read_manifest, update_manifest
+from escount.models.store import load_model, update_manifest
 from escount.models.train import feature_frame
 from escount.variants import base_case
 from escount.signals.roi_bank import RoiSlot, build_roi_bank, stack_rows
@@ -108,11 +108,8 @@ def extract_all_rois_predictions(case, all_rois, profiles_root="outputs/projects
     case_dir = Path(profiles_root) / case
     profile = ProjectProfile.load(case_dir / PROFILE_NAME)
     mask = read_gray(case_dir / ROTATED_MASK_NAME)
-    manifest = read_manifest(case_dir / "model")
-
-    # Load base model
-    model_file = next(iter(manifest["files"]))
-    base_model = joblib.load(case_dir / "model" / model_file)
+    # Load base model (xgb .json / lgbm / joblib, SHA-verified) the same way as inference does
+    base_model, manifest = load_model(case_dir / "model")
 
     grid = AugmentGrid.from_dict(manifest["feature_config"]["grid"])
     x0, _, x1, _ = profile.valid_region["bbox"]

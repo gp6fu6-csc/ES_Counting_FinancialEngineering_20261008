@@ -75,7 +75,7 @@ class TrainingPageTests(unittest.TestCase):
 
     def test_status_reports_each_step(self):
         steps = self.status()["steps"]
-        self.assertEqual(set(steps), {"calibrate", "prepare", "train", "select", "infer"})
+        self.assertEqual(set(steps), {"calibrate", "height", "prepare", "train", "select", "all_rois", "infer"})
         self.assertTrue(steps["calibrate"])
         self.assertFalse(steps["prepare"])                     # empty features_root
         self.assertEqual(self.client.get("/training/NoSuchCase/status").status_code, 404)
